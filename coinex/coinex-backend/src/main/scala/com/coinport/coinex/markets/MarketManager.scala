@@ -22,6 +22,7 @@ import com.coinport.coinex.common.RedeliverFilter
 import com.coinport.coinex.data._
 import scala.annotation.tailrec
 import scala.collection.mutable.ListBuffer
+import org.slf4s.Logging
 import Implicits._
 import OrderStatus._
 import RefundReason._
@@ -38,7 +39,7 @@ object MarketManager {
   }
 }
 
-class MarketManager(val headSide: MarketSide) extends Manager[TMarketState] {
+class MarketManager(val headSide: MarketSide) extends Manager[TMarketState] with Logging {
   // The following are part of persistent state.
   private[markets] var orderPools = Map.empty[MarketSide, SortedSet[Order]]
   private[markets] var orderMap = Map.empty[Long, Order]
@@ -114,14 +115,25 @@ class MarketManager(val headSide: MarketSide) extends Manager[TMarketState] {
 
         // If we see the taker order as a order of selling BTC for CNY, then txOutAmount is 'the amount
         // of BTC in the new transaction'.
-        val txOutAmount = Math.min(takerOrder.maxOutAmount(price), makerOrder.maxInAmount(makerOrder.vprice))
+        var txOutAmount = Math.min(takerOrder.maxOutAmount(price), makerOrder.maxInAmount(makerOrder.vprice))
 
         // txInAmount is 'the amount of CNY in the same transaction'.
-        var txInAmount = Math.round(price.value * txOutAmount)
+        val txInAmount = Math.min(makerOrder.maxOutAmount(makerOrder.vprice),
+          Math.ceil(price.value * txOutAmount).toLong)
 
-        // Because of precision problems introduced by Double math operations, we have to adjust txInAmount
-        // by -1 to make sure the maker order can afford that much of CNY.
-        if (makerOrder.maxOutAmount(makerOrder.vprice) < txInAmount) txInAmount -= 1
+        txOutAmount = Math.min(takerOrder.maxOutAmount(price), Math.round(txInAmount / price.value))
+
+        // The ABOVE calculation of txOutAmount and txInAmount can be sumarrized as follows:
+        // Step-1: calculate the min of taker's `maxOut` and maker's `maxIn` as `out1`
+        // Step-2: calculate `in1` = `out1` * (maker's price)
+        // Step-3: get the min of `in1` and maker's `maxOut` as `finalIn`
+        // Step-4: calculate a `out2` = `finalIn` / (maker's price)
+        // Finally: get the min of `finalOut` = the min of `out2` and taker's `maxOut`
+        // In the end, we use `finalOut' as the amount that taker will pay for maker;
+        // and `finalIn` as the amount that maker will pay taker.
+        // All these calculations are to take care of the precion problem of math calculation
+        // inloving Double and Long, as well as the fact that price is natually Double type but
+        // amount is natually individable Long type.
 
         if (txOutAmount == 0 || txInAmount == 0) {
           state
@@ -234,6 +246,19 @@ class MarketManager(val headSide: MarketSide) extends Manager[TMarketState] {
     } else {
       assert(updatedTakerToAdd.isEmpty)
       assert(txs.lastOption.map(_.takerUpdate.current).getOrElse(orderInfo.order).canBecomeMaker == false)
+    }
+
+    for {
+      headSidePool <- orderPools.get(headSide)
+      headSideHeadOrder <- headSidePool.headOption
+      reverseSidePool <- orderPools.get(headSide.reverse)
+      reverseSideHeadOrder <- reverseSidePool.headOption
+      product = headSideHeadOrder.price.get * reverseSideHeadOrder.price.get
+      if product <= 1.0
+    } {
+      log.error(s"price product: ${headSideHeadOrder.price.get} * ${reverseSideHeadOrder.price.get} = ${product}")
+      log.error(s"top buying and selling orders have conflict prices:\n${headSide}: ${headSideHeadOrder.toString}\n${headSide.reverse}: ${reverseSideHeadOrder.toString}")
+      assert(false)
     }
 
     OrderSubmitted(orderInfo, txs)
