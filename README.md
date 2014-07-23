@@ -38,7 +38,7 @@ Coinport ME can run on one single machine, or it can be deployed into many machi
 
 #Frameworks
 
-Our match engine was designed upon 2 very important concepts: [event-sourcing](http://www.martinfowler.com/eaaDev/EventSourcing.html) and actor model. We use [Typesafe](http://typesafe.com)'s [Akka](http://akka.io) platform to build our ME to make it super scalable and reactive. In order to understand the core logics, you need to know Scala and Akka pretty well. Luckily, both Scala and Akka are very well documented, and there are many tutorials out online. We hereby strongly recommand you read the documentation of Akka's Persistent module: [http://doc.akka.io/docs/akka/2.3.3/scala/persistence.html](http://doc.akka.io/docs/akka/2.3.3/scala/persistence.html).
+Our match engine was designed upon 2 very important concepts: [event-sourcing](http://www.martinfowler.com/eaaDev/EventSourcing.html) and actor model. We use [Typesafe](http://typesafe.com)'s [Akka](http://akka.io) platform to build our ME to make it super scalable and reactive. In order to understand the core logics, you need to know Scala and Akka pretty well. Luckily, both Scala and Akka are very well documented, and there are many tutorials out online. We hereby strongly recommend you read the documentation of Akka's Persistent module: [http://doc.akka.io/docs/akka/2.3.3/scala/persistence.html](http://doc.akka.io/docs/akka/2.3.3/scala/persistence.html).
 
 #Important Modules
 There are many source files in this repository. But the ones that really matter are briefly mentioned here. We suggest you focus on these files.
