@@ -19,8 +19,7 @@ trait CryptoCurrencyTransferBase {
   var transferHandler: SimpleJsonMongoCollection[AccountTransfer, AccountTransfer.Immutable] = null
   var transferItemHandler: SimpleJsonMongoCollection[CryptoCurrencyTransferItem, CryptoCurrencyTransferItem.Immutable] = null
   var logger: LoggingAdapter = null
-  var confirmableHeight = collection.immutable.Map.empty[Currency, Int]
-  var succeededRetainHeight = collection.immutable.Map.empty[Currency, Int]
+  var succeededRetainNum = collection.immutable.Map.empty[Currency, Int]
 
   def getNoneSigId = "NONE_SIGID_" + System.currentTimeMillis().toString
 
@@ -32,8 +31,7 @@ trait CryptoCurrencyTransferBase {
     transferHandler = env.transferHandler
     transferItemHandler = env.transferItemHandler
     logger = env.logger
-    confirmableHeight = env.confirmableHeight
-    succeededRetainHeight = env.succeededRetainHeight
+    succeededRetainNum = env.succeededRetainNum
     this
   }
 
@@ -42,25 +40,26 @@ trait CryptoCurrencyTransferBase {
     this
   }
 
-  def handleTx(currency: Currency, tx: CryptoCurrencyTransaction) {
+  def handleTx(currency: Currency, tx: CryptoCurrencyTransaction, timestamp: Option[Long]) {
     refreshLastBlockHeight(currency, tx)
-    innerHandleTx(currency, tx)
+    innerHandleTx(currency, tx, timestamp)
   }
 
-  def handleBitwayFail(info: CryptoCurrencyTransferInfo, currency: Currency) {
+  def handleBitwayFail(info: CryptoCurrencyTransferInfo, currency: Currency, timestamp: Option[Long], error: ErrorCode) {
     if (id2HandlerMap.contains(info.id)) {
-      handleFailed(id2HandlerMap(info.id))
+      handleFailed(id2HandlerMap(info.id).setTimeStamp(timestamp), error)
     } else {
       logger.warning(s"""${"~" * 50} bitway Fail not match existing item : id2HandleMap.size = ${id2HandlerMap.size}, info = ${info.toString}""")
     }
   }
 
-  protected def innerHandleTx(currency: Currency, tx: CryptoCurrencyTransaction) {}
+  protected def innerHandleTx(currency: Currency, tx: CryptoCurrencyTransaction, timestamp: Option[Long]) {}
 
-  def checkConfirm(currency: Currency) {
+  def checkConfirm(currency: Currency, timestamp: Option[Long], confirmNum: Option[Int]) {
     val lastBlockHeight: Long = manager.getLastBlockHeight(currency)
     id2HandlerMap.values filter (_.item.currency == currency) foreach {
       handler =>
+        handler.setTimeStamp(timestamp).setConfirmNum(confirmNum)
         if (handler.checkConfirm(lastBlockHeight) && handler.item.status.get == Succeeded) {
           handleSucceeded(handler.item.id)
         }
@@ -68,7 +67,7 @@ trait CryptoCurrencyTransferBase {
     succeededId2HandlerMap.values filter (_.item.currency == currency) foreach {
       handler =>
         if (handler.checkRemoveSucceeded(lastBlockHeight)) {
-          id2HandlerMap.remove(handler.item.id)
+          succeededId2HandlerMap.remove(handler.item.id)
         }
     }
   }
@@ -111,15 +110,15 @@ trait CryptoCurrencyTransferBase {
     sigId2MinerFeeMap.clone()
   }
 
-  def reOrganize(currency: Currency, reOrgBlock: BlockIndex, manager: AccountTransferManager) {
+  def reOrganize(currency: Currency, reOrgBlock: BlockIndex, manager: AccountTransferManager, timestamp: Option[Long]) {
     reOrgBlock.height match {
       case Some(reOrgHeight) if reOrgHeight < manager.getLastBlockHeight(currency) =>
         id2HandlerMap.values.filter(_.item.currency == currency) foreach {
-          _.reOrgnize(reOrgHeight)
+          _.setTimeStamp(timestamp).reOrgnize(reOrgHeight)
         }
         succeededId2HandlerMap.values filter (_.item.currency == currency) foreach {
           handler =>
-            if (handler.reOrgnizeSucceeded(reOrgHeight)) {
+            if (handler.setTimeStamp(timestamp).reOrgnizeSucceeded(reOrgHeight)) {
               succeededId2HandlerMap.remove(handler.item.id)
             }
         }
@@ -188,7 +187,7 @@ trait CryptoCurrencyTransferBase {
     item.status match {
       case Some(Succeeded) => // batch Set miner fee before sent message to accountProcessor
         transferHandler.get(item.accountTransferId.get)
-      case Some(Failed) if item.txType.get != UserToHot && item.txType.get != ColdToHot => //UserToHot fail will do nothing
+      case Some(Failed) if item.txType.get != UserToHot && item.txType.get != ColdToHot && item.txType.get != HotToCold => //UserToHot fail will do nothing
         transferHandler.get(item.accountTransferId.get)
       case _ =>
         logger.warning(s"""${"~" * 50} item2AccountTransfer() meet unexpected item : ${item.toString}""")
@@ -208,14 +207,16 @@ trait CryptoCurrencyTransferBase {
     }
   }
 
-  protected def handleFailed(handler: CryptoCurrencyTransferHandler) {}
+  protected def handleFailed(handler: CryptoCurrencyTransferHandler, error: ErrorCode = ErrorCode.Unknown) {}
 
   protected def updateSigId2MinerFee(tx: CryptoCurrencyTransaction) {
     tx.minerFee match {
       case Some(fee) if tx.sigId.isDefined =>
-        tx.status match {
-          case Failed => sigId2MinerFeeMap.remove(tx.sigId.get)
-          case _ => sigId2MinerFeeMap.put(tx.sigId.get, fee)
+        if (tx.txType.isDefined && tx.txType.get != Deposit) { //Deposit should ignore minerFee
+          tx.status match {
+            case Failed => sigId2MinerFeeMap.remove(tx.sigId.get)
+            case _ => sigId2MinerFeeMap.put(tx.sigId.get, fee)
+          }
         }
       case Some(_) =>
         logger.error(s"""${"~" * 50} updateSigId2MinerFee minerFee defined without sigId defined : ${tx.toString}""")
@@ -241,7 +242,7 @@ trait CryptoCurrencyTransferDepositLikeBase extends CryptoCurrencyTransferBase {
     super.handleSucceeded(itemId)
   }
 
-  override def handleFailed(handler: CryptoCurrencyTransferHandler) {
+  override def handleFailed(handler: CryptoCurrencyTransferHandler, error: ErrorCode = ErrorCode.Unknown) {
     handler.onFail()
     id2HandlerMap.remove(handler.item.id)
     removeItemHandlerFromMap(handler.item.sigId.get, handler.item.to.get)
@@ -259,44 +260,48 @@ trait CryptoCurrencyTransferDepositLikeBase extends CryptoCurrencyTransferBase {
     }
   }
 
-  override def innerHandleTx(currency: Currency, tx: CryptoCurrencyTransaction) {
+  override def innerHandleTx(currency: Currency, tx: CryptoCurrencyTransaction, timestamp: Option[Long]) {
     tx.outputs match {
       case Some(outputList) if outputList.size > 0 =>
-        outputList filter (out => out.userId.isDefined && out.userId.get != COLD_UID) foreach {
-          //ColdToHot transfer should ignore cold outputPort
-          outputPort =>
-            tx.status match {
-              case Failed =>
-                getItemHandlerFromMap(tx.sigId.get, outputPort) match {
-                  case Some(handler) =>
-                    handleFailed(handler)
-                  case None =>
-                }
-              case _ =>
-                getItemHandlerFromMap(tx.sigId.get, outputPort) match {
-                  case Some(handler) =>
-                    handler.onNormal(tx)
-                  case _ =>
-                    val handler: Option[CryptoCurrencyTransferHandler] =
-                      tx.txType match {
-                        case Some(Deposit) =>
-                          Some(new CryptoCurrencyTransferDepositHandler(currency, outputPort, tx))
-                        case Some(ColdToHot) if outputPort.userId.get == HOT_UID =>
-                          Some(new CryptoCurrencyTransferColdToHotHandler(currency, outputPort, tx))
+        val validOutputs = outputList filter (out => out.userId.isDefined && out.userId.get != COLD_UID)
+        if (!validOutputs.isEmpty) {
+          validOutputs foreach {
+            //ColdToHot transfer should ignore cold outputPort
+            outputPort =>
+              tx.status match {
+                case Failed =>
+                  getItemHandlerFromMap(tx.sigId.get, outputPort) match {
+                    case Some(handler) =>
+                      handleFailed(handler.setTimeStamp(timestamp))
+                    case None =>
+                  }
+                case _ =>
+                  getItemHandlerFromMap(tx.sigId.get, outputPort) match {
+                    case Some(handler) =>
+                      handler.setTimeStamp(timestamp).onNormal(tx)
+                    case _ =>
+                      val handler: Option[CryptoCurrencyTransferHandler] =
+                        tx.txType match {
+                          case Some(Deposit) =>
+                            // Set minerFee to None, as Deposit should not handle it
+                            Some(new CryptoCurrencyTransferDepositHandler(currency, outputPort, tx.copy(minerFee = None), timestamp))
+                          case Some(ColdToHot) if outputPort.userId.get == HOT_UID =>
+                            Some(new CryptoCurrencyTransferColdToHotHandler(currency, outputPort, tx, timestamp))
+                          case _ =>
+                            logger.error(s"""${"~" * 50} innerHandleTx() ${tx.txType.get.toString} tx is not valid txType : ${tx.toString}""")
+                            None
+                        }
+                      handler match {
+                        case Some(hd) =>
+                          saveItemHandlerToMap(tx.sigId.get, outputPort, hd)
+                          id2HandlerMap.put(hd.item.id, hd)
                         case _ =>
-                          logger.error(s"""${"~" * 50} innerHandleTx() ${tx.txType.get.toString} tx is not valid txType : ${tx.toString}""")
-                          None
                       }
-                    handler match {
-                      case Some(hd) =>
-                        saveItemHandlerToMap(tx.sigId.get, outputPort, hd)
-                        id2HandlerMap.put(hd.item.id, hd)
-                      case _ =>
-                    }
-                }
-            }
+                  }
+              }
+          }
+          updateSigId2MinerFee(tx)
         }
-        updateSigId2MinerFee(tx)
       case _ =>
         logger.warning(s"""${"~" * 50} innerHandleTx() ${tx.txType.get.toString} tx not define outputs : ${tx.toString}""")
     }
@@ -328,8 +333,8 @@ trait CryptoCurrencyTransferDepositLikeBase extends CryptoCurrencyTransferBase {
 
 trait CryptoCurrencyTransferWithdrawalLikeBase extends CryptoCurrencyTransferBase {
 
-  def newHandlerFromAccountTransfer(t: AccountTransfer, from: Option[CryptoCurrencyTransactionPort], to: Option[CryptoCurrencyTransactionPort]) {
-    val handler = new CryptoCurrencyTransferWithdrawalLikeHandler(t, from, to)
+  def newHandlerFromAccountTransfer(t: AccountTransfer, from: Option[CryptoCurrencyTransactionPort], to: Option[CryptoCurrencyTransactionPort], timestamp: Option[Long]) {
+    val handler = new CryptoCurrencyTransferWithdrawalLikeHandler(t, from, to, timestamp)
     msgBoxMap.put(handler.item.id, handler.item)
     id2HandlerMap.put(handler.item.id, handler)
   }
@@ -338,13 +343,14 @@ trait CryptoCurrencyTransferWithdrawalLikeBase extends CryptoCurrencyTransferBas
     new CryptoCurrencyTransferWithdrawalLikeHandler(item)
   }
 
-  override def handleFailed(handler: CryptoCurrencyTransferHandler) {
-    handler.onFail()
+  override def handleFailed(handler: CryptoCurrencyTransferHandler, error: ErrorCode = ErrorCode.Unknown) {
     val item = id2HandlerMap.remove(handler.item.id).get.item
-    msgBoxMap.put(item.id, item)
+    if (error != ErrorCode.InsufficientHot) { // withdrawal and hotToCold should do nothing when meet insufficient hot error
+      msgBoxMap.put(item.id, item)
+    }
   }
 
-  override def innerHandleTx(currency: Currency, tx: CryptoCurrencyTransaction) {
+  override def innerHandleTx(currency: Currency, tx: CryptoCurrencyTransaction, timestamp: Option[Long]) {
     tx.ids match {
       case Some(idList) if idList.size > 0 =>
         idList foreach {
@@ -353,9 +359,9 @@ trait CryptoCurrencyTransferWithdrawalLikeBase extends CryptoCurrencyTransferBas
             if (id2HandlerMap.contains(id)) {
               tx.status match {
                 case Failed =>
-                  handleFailed(id2HandlerMap(id))
+                  handleFailed(id2HandlerMap(id).setTimeStamp(timestamp))
                 case _ =>
-                  id2HandlerMap(id).onNormal(tx)
+                  id2HandlerMap(id).setTimeStamp(timestamp).onNormal(tx)
               }
             } else {
               logger.warning(s"""${"~" * 50} innerHandlerTx() ${tx.txType.get.toString} item id ${id} not contained in id2HandlerMap : ${tx.toString}""")

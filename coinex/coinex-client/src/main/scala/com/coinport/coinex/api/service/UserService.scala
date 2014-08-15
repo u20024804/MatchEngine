@@ -10,6 +10,7 @@ import akka.pattern.ask
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration._
 import scala.concurrent.Await.result
+import scala.concurrent.Await
 
 object UserService extends AkkaService {
   override def hashCode(): Int = super.hashCode()
@@ -20,6 +21,10 @@ object UserService extends AkkaService {
     val realName = user.realName
     val nationalId = user.nationalId
     val password = user.password
+    val referralParams = user.referedToken match {
+      case Some(token) => try { Some(ReferralParams(Some(token.toLong))) } catch { case _: Throwable => None }
+      case None => None
+    }
 
     val profile = UserProfile(
       id = id,
@@ -39,12 +44,12 @@ object UserService extends AkkaService {
       withdrawalAddresses = None
     )
 
-    val command = DoRegisterUser(profile, password)
+    val command = DoRegisterUser(profile, password, referralParams)
 
     backend ? command map {
       case succeeded: RegisterUserSucceeded =>
         val returnProfile = succeeded.userProfile
-        ApiResult(true, 0, returnProfile.id.toString, Some(returnProfile))
+        ApiResult(true, 0, returnProfile.id.toString)
       case failed: RegisterUserFailed =>
         ApiResult(false, failed.error.value, failed.toString)
       case x =>
@@ -67,36 +72,49 @@ object UserService extends AkkaService {
     }
   }
 
-  def getDepositAddress(currency: Currency, userId: Long) = {
+  def getDepositAddress(currencySeq: Seq[Currency], userId: Long) = {
     backend ? QueryProfile(Some(userId)) map {
       case qpr: QueryProfileResult =>
         val addr = qpr.userProfile match {
           case Some(profile) =>
-            if (!profile.depositAddresses.isDefined || !profile.depositAddresses.get.get(currency).isDefined) {
-              // allocate new address
-              val future =
-                backend ? AllocateNewAddress(currency, userId, None) map {
-                  case result: AllocateNewAddressResult =>
-                    val ana = result.address.get
+            // allocate new address
+            val map: Map[Currency, String] = if (!profile.depositAddresses.isDefined) {
+              getDepositAddressFromBackend(currencySeq, userId)
+            } else {
+              val currencyDiff = currencySeq.diff(profile.depositAddresses.get.filter(_._2 != "").keys.toSeq)
+              val mapFromBackend = getDepositAddressFromBackend(currencyDiff, userId)
+              (profile.depositAddresses.get ++ mapFromBackend).toMap
+            }
 
-                    // update profile with updated deposit address
-                    val addrMap = profile.depositAddresses match {
-                      case Some(depositMap) => depositMap ++ Map(currency -> ana)
-                      case None => Map(currency -> ana)
-                    }
-
-                    val newProfile = profile.copy(depositAddresses = Some(addrMap))
-                    backend ! DoUpdateUserProfile(newProfile)
-                    ana
-                  case x => x.toString
-                }
-              result[String](future, (2 seconds))
-            } else profile.depositAddresses.get.get(currency).get
-          case None =>
+            setDepositAddressToBackend(profile, map)
+            map
+          case None => Map.empty[Currency, String]
         }
-        ApiResult(true, 0, "", Some(addr))
+
+        val rv = currencySeq.map { c =>
+          val s: String = c
+          s -> addr.getOrElse(c, "")
+        }.toMap
+
+        ApiResult(true, 0, "", Some(rv))
       case x => ApiResult(false, -1, x.toString)
     }
+  }
+
+  private def getDepositAddressFromBackend(currencySeq: Seq[Currency], userId: Long): Map[Currency, String] = {
+    val ListOfFuture = currencySeq.map { c =>
+      backend ? AllocateNewAddress(c, userId) map {
+        case rv: AllocateNewAddressResult =>
+          (rv.currency, rv.address.getOrElse(""))
+      }
+    }
+    val futureList = scala.concurrent.Future.sequence(ListOfFuture)
+    Await.result(futureList.map(x => x.toMap), 3 second)
+  }
+
+  def setDepositAddressToBackend(profile: UserProfile, addrMap: Map[Currency, String]) = {
+    val newProfile = profile.copy(depositAddresses = Some(addrMap))
+    backend ! DoUpdateUserProfile(newProfile)
   }
 
   def setWithdrawalAddress(uid: Long, currency: Currency, address: String) = {
@@ -114,6 +132,49 @@ object UserService extends AkkaService {
           case None =>
         }
         ApiResult(true, 0, "", Some(addr))
+      case x => ApiResult(false, -1, x.toString)
+    }
+  }
+
+  def getGoogleAuth(uid: Long) = {
+    backend ? QueryProfile(Some(uid)) map {
+      case qpr: QueryProfileResult =>
+        val secret = qpr.userProfile match {
+          case Some(profile) =>
+            profile.googleAuthenticatorSecret.getOrElse("")
+          case None => ""
+        }
+        ApiResult(true, 0, "", Some(secret))
+      case x => ApiResult(false, -1, x.toString)
+    }
+  }
+
+  def bindGoogleAuth(uid: Long, key: String) = {
+    //update withdrawal address of user profile
+    backend ? QueryProfile(Some(uid)) map {
+      case qpr: QueryProfileResult =>
+        qpr.userProfile match {
+          case Some(profile) =>
+            val newPro = profile.copy(googleAuthenticatorSecret = Some(key))
+            backend ! DoUpdateUserProfile(newPro)
+          case None =>
+        }
+        ApiResult(true, 0, "", None)
+      case x => ApiResult(false, -1, x.toString)
+    }
+  }
+
+  def unbindGoogleAuth(uid: Long) = {
+    //update withdrawal address of user profile
+    backend ? QueryProfile(Some(uid)) map {
+      case qpr: QueryProfileResult =>
+        qpr.userProfile match {
+          case Some(profile) =>
+            val newPro = profile.copy(googleAuthenticatorSecret = None)
+            backend ! DoUpdateUserProfile(newPro)
+          case None =>
+        }
+        ApiResult(true, 0, "", None)
       case x => ApiResult(false, -1, x.toString)
     }
   }
@@ -163,7 +224,7 @@ object UserService extends AkkaService {
     backend ? command map {
       case succeeded: UpdateUserProfileSucceeded =>
         val returnProfile = succeeded.userProfile
-        ApiResult(true, 0, returnProfile.id.toString, Some(returnProfile))
+        ApiResult(true, 0, returnProfile.id.toString)
       case failed: UpdateUserProfileFailed =>
         ApiResult(false, failed.error.value, failed.toString)
       case x =>
@@ -216,7 +277,7 @@ object UserService extends AkkaService {
     backend ? command map {
       case result: PasswordResetTokenValidationResult =>
         result.userProfile match {
-          case Some(profile) => ApiResult(true, 0, "", Some(profile))
+          case Some(profile) => ApiResult(true, 0, "")
           case None => ApiResult(false, -1, "")
         }
     }
@@ -228,6 +289,30 @@ object UserService extends AkkaService {
       case succeeded: ResetPasswordSucceeded =>
         ApiResult(true, 0, "", Some(succeeded))
       case failed: ResetPasswordFailed =>
+        ApiResult(false, failed.error.value, failed.toString)
+      case e =>
+        ApiResult(false, -1, e.toString)
+    }
+  }
+
+  def changePassword(email: String, oldPassword: String, newPassword: String) = {
+    val command = DoChangePassword(email, oldPassword, newPassword)
+    backend ? command map {
+      case succeeded: DoChangePasswordSucceeded =>
+        ApiResult(true, 0, "")
+      case failed: DoChangePasswordFailed =>
+        ApiResult(false, failed.error.value, failed.toString)
+      case e =>
+        ApiResult(false, -1, e.toString)
+    }
+  }
+
+  def bindOrUpdateMobile(email: String, newMobile: String) = {
+    val command = DoBindMobile(email, newMobile)
+    backend ? command map {
+      case succeeded: DoBindMobileSucceeded =>
+        ApiResult(true, 0, "")
+      case failed: DoBindMobileFailed =>
         ApiResult(false, failed.error.value, failed.toString)
       case e =>
         ApiResult(false, -1, e.toString)
@@ -263,4 +348,43 @@ object UserService extends AkkaService {
         ApiResult(false, -1, e.toString)
     }
   }
+
+  def sendVerificationCodeEmail(email: String, code: String) = {
+    backend ? DoSendVerificationCodeEmail(email, code) map {
+      case result: SendVerificationCodeEmailSucceeded =>
+        ApiResult(true, 0, "")
+      case e =>
+        ApiResult(false, -1, e.toString)
+    }
+  }
+
+  def setUserSecurityPreference(uid: Long, preference: String) = {
+    //update withdrawal address of user profile
+    backend ? QueryProfile(Some(uid)) map {
+      case qpr: QueryProfileResult =>
+        qpr.userProfile match {
+          case Some(profile) =>
+            val newPro = profile.copy(securityPreference = Some(preference))
+            backend ! DoUpdateUserProfile(newPro)
+          case None =>
+        }
+        ApiResult(true, 0, "", None)
+      case x => ApiResult(false, -1, x.toString)
+    }
+  }
+
+  def updateNickName(uid: Long, nickname: String) = {
+    backend ? QueryProfile(Some(uid)) map {
+      case qpr: QueryProfileResult =>
+        qpr.userProfile match {
+          case Some(profile) =>
+            val newPro = profile.copy(realName = Some(nickname))
+            backend ! DoUpdateUserProfile(newPro)
+            ApiResult(true, 0, "", None)
+          case None => ApiResult(false, ErrorCode.UserNotExist.value, "user not exist")
+        }
+      case x => ApiResult(false, -1, x.toString)
+    }
+  }
+
 }

@@ -27,11 +27,11 @@ class AccountTransferProcessor(val db: MongoDB, accountProcessorPath: ActorPath,
 
   implicit val manager = new AccountTransferManager()
   val accountTransferConfig = loadConfig(context.system.settings.config.getString("akka.exchange.transfer-path"))
-  val transferDebugConfig = accountTransferConfig.transferDebug
+  val transferDebugConfig: Boolean = accountTransferConfig.transferDebug
   private val channelToAccountProcessor = createChannelTo(ACCOUNT_PROCESSOR <<) // DO NOT CHANGE
   private val bitwayChannels = bitwayProcessors.map(kv => kv._1 -> createChannelTo(BITWAY_PROCESSOR << kv._1))
 
-  setTransferConfig(accountTransferConfig)
+  setSucceededRetainNum(accountTransferConfig.succeededRetainNum)
   intTransferHandlerObjectMap()
 
   private def loadConfig(configPath: String): AccountTransferConfig = {
@@ -40,17 +40,20 @@ class AccountTransferProcessor(val db: MongoDB, accountProcessorPath: ActorPath,
   }
 
   override def identifyChannel: PartialFunction[Any, String] = {
-    case r: DoRequestTransfer => "account"
-    case MultiCryptoCurrencyTransactionMessage(currency, _, _) => "bitway_" + currency.toString.toLowerCase()
-    case TransferCryptoCurrencyResult(currency, _, _) => "bitway_" + currency.toString.toLowerCase()
-    case MultiTransferCryptoCurrencyResult(currency, _, _) => "bitway_" + currency.toString.toLowerCase()
+    case r: DoRequestTransfer =>
+      r.transfer.`type` match {
+        case HotToCold => "bitway_" + r.transfer.currency.toString.toLowerCase()
+        case ColdToHot => "bitway_" + r.transfer.currency.toString.toLowerCase()
+        case _ => "account"
+      }
+    case MultiCryptoCurrencyTransactionMessage(currency, _, _, _, _) => "bitway_" + currency.toString.toLowerCase()
   }
 
   def receiveRecover = PartialFunction.empty[Any, Unit]
 
   def receiveCommand = LoggingReceive {
-    case p @ ConfirmablePersistent(DoRequestTransfer(w), _, _) =>
-      persist(DoRequestTransfer(w.copy(id = manager.getTransferId))) {
+    case p @ ConfirmablePersistent(DoRequestTransfer(w, _), _, _) =>
+      persist(DoRequestTransfer(w.copy(id = manager.getTransferId, updated = w.created), transferDebug = Some(transferDebugConfig))) {
         event =>
           confirm(p)
           updateState(event)
@@ -61,6 +64,7 @@ class AccountTransferProcessor(val db: MongoDB, accountProcessorPath: ActorPath,
               case TransferType.UserToHot =>
                 sender ! RequestTransferFailed(UnsupportTransferType)
               case TransferType.Withdrawal => // accept wait for admin accept
+                sender ! RequestTransferSucceeded(event.transfer) // wait for admin confirm
               case TransferType.ColdToHot => // accept, wait for admin confirm
               case TransferType.HotToCold => // accept, save request to map
               case TransferType.Unknown => // accept wait for admin accept
@@ -75,7 +79,7 @@ class AccountTransferProcessor(val db: MongoDB, accountProcessorPath: ActorPath,
     case AdminConfirmTransferFailure(t, error) =>
       transferHandler.get(t.id) match {
         case Some(transfer) if transfer.status == Pending =>
-          val updated = transfer.copy(updated = Some(System.currentTimeMillis), status = Failed, reason = Some(error))
+          val updated = transfer.copy(updated = Some(System.currentTimeMillis), status = Rejected, reason = Some(error))
           persist(AdminConfirmTransferFailure(updated, error)) {
             event =>
               sender ! AdminCommandResult(Ok)
@@ -90,7 +94,7 @@ class AccountTransferProcessor(val db: MongoDB, accountProcessorPath: ActorPath,
       transferHandler.get(t.id) match {
         case Some(transfer) if transfer.status == Pending =>
           if (t.userId == transfer.userId) {
-            val updated = transfer.copy(updated = Some(System.currentTimeMillis), status = Failed, reason = Some(ErrorCode.UserCanceled))
+            val updated = transfer.copy(updated = Some(System.currentTimeMillis), status = Cancelled, reason = Some(ErrorCode.UserCanceled))
             if (transfer.`type` == ColdToHot || transfer.`type` == Withdrawal) {
               persist(DoCancelTransfer(updated)) {
                 event =>
@@ -108,15 +112,15 @@ class AccountTransferProcessor(val db: MongoDB, accountProcessorPath: ActorPath,
         case None => sender ! AdminCommandResult(TransferNotExist)
       }
 
-    case AdminConfirmTransferSuccess(t) =>
+    case AdminConfirmTransferSuccess(t, _) =>
       transferHandler.get(t.id) match {
-        case Some(transfer) if transfer.status == Pending =>
+        case Some(transfer) if transfer.status == Pending || transfer.status == HotInsufficient =>
           if (isCryptoCurrency(transfer.currency) && !transferDebugConfig) {
             transfer.`type` match {
               case TransferType.Deposit => sender ! RequestTransferFailed(UnsupportTransferType)
               case TransferType.Withdrawal if transfer.address.isDefined =>
                 val updated = transfer.copy(updated = Some(System.currentTimeMillis), status = Accepted)
-                persist(AdminConfirmTransferSuccess(updated)) {
+                persist(AdminConfirmTransferSuccess(updated, Some(transferDebugConfig))) {
                   event =>
                     updateState(event)
                     sendBitwayMsg(updated.currency)
@@ -124,7 +128,7 @@ class AccountTransferProcessor(val db: MongoDB, accountProcessorPath: ActorPath,
                 }
               case TransferType.ColdToHot =>
                 val updated = transfer.copy(updated = Some(System.currentTimeMillis), status = Accepted)
-                persist(AdminConfirmTransferSuccess(updated)) {
+                persist(AdminConfirmTransferSuccess(updated, Some(transferDebugConfig))) {
                   event =>
                     updateState(event)
                     sender ! AdminCommandResult(Ok)
@@ -134,7 +138,7 @@ class AccountTransferProcessor(val db: MongoDB, accountProcessorPath: ActorPath,
             }
           } else {
             val updated = transfer.copy(updated = Some(System.currentTimeMillis), status = Succeeded)
-            persist(AdminConfirmTransferSuccess(updated)) {
+            persist(AdminConfirmTransferSuccess(updated, Some(transferDebugConfig))) {
               event =>
                 deliverToAccountManager(event)
                 updateState(event)
@@ -146,7 +150,7 @@ class AccountTransferProcessor(val db: MongoDB, accountProcessorPath: ActorPath,
       }
 
     case p @ ConfirmablePersistent(msg: MultiCryptoCurrencyTransactionMessage, _, _) =>
-      persist(msg) {
+      persist(msg.copy(confirmNum = accountTransferConfig.confirmNumMap.get(msg.currency), timestamp = Some(System.currentTimeMillis()))) {
         event =>
           confirm(p)
           updateState(event)
@@ -155,7 +159,7 @@ class AccountTransferProcessor(val db: MongoDB, accountProcessorPath: ActorPath,
       }
 
     case msg: MultiCryptoCurrencyTransactionMessage =>
-      persist(msg) {
+      persist(msg.copy(confirmNum = accountTransferConfig.confirmNumMap.get(msg.currency), timestamp = Some(System.currentTimeMillis()))) {
         event =>
           updateState(event)
           sendBitwayMsg(event.currency)
@@ -164,7 +168,7 @@ class AccountTransferProcessor(val db: MongoDB, accountProcessorPath: ActorPath,
 
     case tr: TransferCryptoCurrencyResult =>
       if (tr.error != ErrorCode.Ok && tr.request.isDefined && !tr.request.get.transferInfos.isEmpty) {
-        persist(tr) {
+        persist(tr.copy(timestamp = Some(System.currentTimeMillis()))) {
           event =>
             updateState(event)
             sendBitwayMsg(event.currency)
@@ -174,7 +178,7 @@ class AccountTransferProcessor(val db: MongoDB, accountProcessorPath: ActorPath,
 
     case mr: MultiTransferCryptoCurrencyResult =>
       if (mr.error != ErrorCode.Ok && mr.transferInfos.isDefined && !mr.transferInfos.get.isEmpty) {
-        persist(mr) {
+        persist(mr.copy(timestamp = Some(System.currentTimeMillis()))) {
           event =>
             updateState(event)
             sendBitwayMsg(event.currency)
@@ -199,12 +203,17 @@ class AccountTransferProcessor(val db: MongoDB, accountProcessorPath: ActorPath,
 
   private def deliverToAccountManager(event: Any) = {
     log.info(s">>>>>>>>>>>>>>>>>>>>> deliverToAccountManager => event = ${event.toString}")
-    channelToAccountProcessor ! Deliver(Persistent(event), accountProcessorPath)
+    if (!recoveryRunning) {
+      channelToAccountProcessor ! Deliver(Persistent(event), accountProcessorPath)
+    }
   }
 
   private def deliverToBitwayProcessor(currency: Currency, event: Any) = {
     log.info(s">>>>>>>>>>>>>>>>>>>>> deliverToBitwayProcessor => currency = ${currency.toString}, event = ${event.toString}, path = ${bitwayProcessors(currency).path.toString}")
-    bitwayChannels(currency) ! Deliver(Persistent(event), bitwayProcessors(currency).path)
+
+    if (!recoveryRunning) {
+      bitwayChannels(currency) ! Deliver(Persistent(event), bitwayProcessors(currency).path)
+    }
   }
 }
 

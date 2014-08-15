@@ -52,6 +52,7 @@ struct TAccountState {
     7: map<string, i64> codeBIndexMap
     8: map<Currency, CashAccount> hotWalletAccount
     9: map<Currency, CashAccount> coldWalletAccount
+    10: optional i64 lastPaymentId
 }
 
 struct TMarketState {
@@ -96,6 +97,7 @@ struct TSimpleState {
 struct TMetricsState {
     1: map<MarketSide, TMetricsObserver> observers
     2: RedeliverFilters filters
+    3: optional i64 window
 }
 
 struct TRobotState {

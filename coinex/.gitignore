@@ -1,0 +1,14 @@
+.cache
+.classpath
+.project
+mongodb
+nohup.out
+project/project/
+project/target/
+target/
+log/
+lib_src/
+*.orig
+*.jar
+ctags
+filenametags

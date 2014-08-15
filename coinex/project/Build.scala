@@ -12,7 +12,7 @@ import com.typesafe.sbt.SbtNativePackager._
 import NativePackagerKeys._
 
 object CoinexBuild extends Build {
-  val coinexVersion = "1.1.23-SNAPSHOT"
+  val coinexVersion = "1.1.32-SNAPSHOT"
 
   val akkaVersion = "2.3.3"
   val bijectionVersion = "0.6.2"
@@ -27,6 +27,7 @@ object CoinexBuild extends Build {
     initialCommands in console := """
       import com.coinport.coinex.Client
       import com.coinport.coinex.monitoring.MonitorTest
+      import com.coinport.coinex.robot.exchange.AutoExchangeRobotExecutor
       import com.coinport.coinex.data._
       import com.coinport.coinex.data.Currency._
       import com.coinport.coinex.robot.sample._

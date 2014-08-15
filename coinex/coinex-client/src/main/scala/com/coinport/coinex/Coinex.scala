@@ -24,6 +24,8 @@ final class Coinex(routers: LocalRouters) extends Actor with Logging {
       case m: DoResendVerifyEmail => routers.userProcessor forward m
       case m: DoRequestPasswordReset => routers.userProcessor forward m
       case m: DoResetPassword => routers.userProcessor forward m
+      case m: DoChangePassword => routers.userProcessor forward m
+      case m: DoBindMobile => routers.userProcessor forward m
       case m: VerifyEmail => routers.userProcessor forward m
       case m: Login => routers.userProcessor forward m
       case m: ValidatePasswordResetToken => routers.userProcessor forward m
@@ -32,24 +34,34 @@ final class Coinex(routers: LocalRouters) extends Actor with Logging {
       case m: QueryProfile => routers.userProcessor forward m
       case m: DoSuspendUser => routers.userProcessor forward m
       case m: DoResumeUser => routers.userProcessor forward m
+      case m: DoSendVerificationCodeEmail => routers.userProcessor forward m
       //-------------------------------------------------------------------------
       // Account Processor
-      case m: DoRequestTransfer => routers.accountProcessor forward m
+      case m: DoRequestTransfer => {
+        m.transfer.`type` match {
+          case TransferType.Deposit => routers.accountProcessor forward m
+          case TransferType.Withdrawal => routers.accountProcessor forward m
+          case TransferType.ColdToHot => routers.bitwayProcessors(m.transfer.currency) forward m
+          case TransferType.HotToCold => routers.bitwayProcessors(m.transfer.currency) forward m
+          case _ => println("invalid transferType !!!")
+        }
+      }
       case m: DoRequestGenerateABCode => routers.accountProcessor forward m
       case m: DoRequestACodeQuery => routers.accountProcessor forward m
       case m: DoRequestBCodeRecharge => routers.accountProcessor forward m
       case m: DoRequestConfirmRC => routers.accountProcessor forward m
       case m: DoSubmitOrder => routers.accountProcessor forward m
       case m: CryptoTransferResult => routers.accountProcessor forward m
+      case m: DoRequestPayment => routers.accountProcessor forward m
 
       // Market Processors
       case m: DoCancelOrder => routers.marketProcessors(m.side) forward m
 
       // Robot Processor
-      case m: DoSubmitRobot => routers.robotProcessor forward Persistent(m)
-      case m: DoCancelRobot => routers.robotProcessor forward Persistent(m)
-      case m: DoAddRobotDNA => routers.robotProcessor forward Persistent(m)
-      case m: DoRemoveRobotDNA => routers.robotProcessor forward Persistent(m)
+      // case m: DoSubmitRobot => routers.robotProcessor forward Persistent(m)
+      // case m: DoCancelRobot => routers.robotProcessor forward Persistent(m)
+      // case m: DoAddRobotDNA => routers.robotProcessor forward Persistent(m)
+      // case m: DoRemoveRobotDNA => routers.robotProcessor forward Persistent(m)
 
       // DepoistWithdraw Processor
       case m: AdminConfirmTransferFailure => routers.depositWithdrawProcessor forward m

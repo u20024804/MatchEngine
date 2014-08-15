@@ -32,6 +32,7 @@ enum ErrorCode {
     BITWAY_PROCESS_FAIL              = 2009
     INSUFFICIENT_HOT                 = 2010
     INSUFFICIENT_COLD                = 2011
+    INVALID_USER                     = 2012
 
     // Market related
     ORDER_NOT_EXIST                  = 3001
@@ -55,8 +56,8 @@ enum ErrorCode {
     INVALID_REQUEST_ADDRESS_NUM      = 8002
     RPC_ERROR                        = 8003
     NO_ADDRESS_FOUND                 = 8004
-    WITHDRAWAL_TO_DEPOSIT_ADDRESS    = 8005
-    ADDRESS_FAIL                     = 8006 // NO_ADDRESS_FOUND or WITHDRAWAL_TO_DEPOSIT_ADDRESS
+    WITHDRAWAL_TO_BAD_ADDRESS        = 8005
+    ADDRESS_FAIL                     = 8006 // NO_ADDRESS_FOUND or WITHDRAWAL_TO_BAD_ADDRESS
 
     // Controller && Services
     PARAM_EMPTY                      = 9001
@@ -67,9 +68,18 @@ enum ErrorCode {
     MOBILE_NOT_VERIFIED              = 9006
     SEND_SMS_FREQUENCY_TOO_HIGH      = 9007
     EMAIL_NOT_BIND_WITH_INVITE_CODE  = 9008
+    INVALID_PHONE_NUMBER_FORMAT      = 9009
+    INVALID_GOOGLE_VERIFY_CODE       = 9010
+    INVALID_GOOGLE_SECRET            = 9011
+    INVALID_EMAIL_VERIFY_CODE        = 9012
 
     // Transfer
     TRANSFER_REJECT                  = 10001
+
+    // Common
+    PARTIALLY_FAILED                 = 11001
+    ALL_FAILED                       = 11002
+
 }
 
 
@@ -84,9 +94,16 @@ enum Currency {
     // must make sure that the min index of crypto currency is 1000
     BTC  = 1000
     LTC  = 1010
-    PTS  = 1200
     DOGE = 1100
+    PTS  = 1200
     DRK  = 1300
+    BC   = 1400
+    VRC  = 1500
+    ZET  = 1600
+    // 2-gen coins
+    BTSX = 2100
+    NXT  = 2200
+    QORA = 2210
 }
 
 enum OrderStatus {
@@ -109,6 +126,7 @@ enum EmailType {
     LOGIN_TOKEN = 2
     PASSWORD_RESET_TOKEN = 3
     MONITOR = 4
+    VERIFICATION_CODE = 5
 }
 
 enum ChartTimeDimension {
@@ -158,6 +176,9 @@ enum TransferStatus {
     FAILED               = 5 // this will happen when confirmation satisfied but can't spend it
     REORGING             = 6
     REORGING_SUCCEEDED   = 7
+    CANCELLED            = 8
+    REJECTED             = 9
+    HOT_INSUFFICIENT     = 10
 }
 
 enum ExportedEventType {
@@ -240,6 +261,7 @@ struct UserProfile {
     16: optional map<Currency, string> withdrawalAddresses
     17: optional i64 referralToken
     18: optional i64 referralUserId  // this should be hidden for this user
+    19: optional string securityPreference // 01:email 10:sms 11: email && sms
 }
 
 struct ReferralParams {
@@ -399,6 +421,17 @@ struct AccountTransfersWithMinerFee {
     2: optional i64 minerFee
 }
 
+struct Payment {
+    1: i64 id
+    2: i64 payer
+    3: i64 payee
+    4: Currency currency
+    5: i64 amount
+    6: optional i64 created
+    7: optional Fee fee
+    8: optional string reason
+}
+
 struct ABCodeItem {
     1: i64 id
     2: optional i64 dUserId
@@ -538,6 +571,7 @@ struct CryptoCurrencyTransferInfo {
     3: optional i64 internalAmount
     4: optional double amount
     5: optional string from
+    6: optional ErrorCode error
 }
 
 struct CryptoCurrencyTransaction {

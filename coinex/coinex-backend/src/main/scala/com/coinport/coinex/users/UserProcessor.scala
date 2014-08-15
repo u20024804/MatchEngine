@@ -40,6 +40,14 @@ class UserProcessor(mailer: ActorRef, secret: String)
           sendEmailVerificationEmail(profile)
       }
 
+    case m @ DoSendVerificationCodeEmail(email, code) =>
+      manager.getUser(email) match {
+        case Some(profile) =>
+          sender ! SendVerificationCodeEmailSucceeded(profile.id, profile.email)
+          sendVerificationCodeEmail(email, code)
+        case None => sender ! SendVerificationCodeEmailFailed(UserNotExist)
+      }
+
     case m @ DoResendVerifyEmail(email) =>
       manager.getUser(email) match {
         case Some(profile) =>
@@ -59,7 +67,9 @@ class UserProcessor(mailer: ActorRef, secret: String)
             mobileVerified = if (userProfile.mobile.isDefined) true else profile.mobileVerified,
             status = userProfile.status,
             depositAddresses = Some(profile.depositAddresses.getOrElse(Map.empty) ++ userProfile.depositAddresses.getOrElse(Map.empty)),
-            withdrawalAddresses = Some(profile.withdrawalAddresses.getOrElse(Map.empty) ++ userProfile.withdrawalAddresses.getOrElse(Map.empty))
+            withdrawalAddresses = Some(profile.withdrawalAddresses.getOrElse(Map.empty) ++ userProfile.withdrawalAddresses.getOrElse(Map.empty)),
+            googleAuthenticatorSecret = userProfile.googleAuthenticatorSecret,
+            securityPreference = userProfile.securityPreference
           )
           sender ! UpdateUserProfileSucceeded(newProfile)
           persist(DoUpdateUserProfile(newProfile))(updateState)
@@ -88,6 +98,24 @@ class UserProcessor(mailer: ActorRef, secret: String)
           sender ! ResetPasswordSucceeded(profile.id, profile.email)
         case _ =>
           sender ! ResetPasswordFailed(TokenNotMatch)
+      }
+
+    case m @ DoChangePassword(email, oldPassword, newPassword) =>
+      manager.checkLogin(email, oldPassword) match {
+        case Left(error) => sender ! DoChangePasswordFailed(error)
+        case Right(profile) =>
+          persist(m)(updateState)
+          sender ! DoChangePasswordSucceeded(profile.id, profile.email)
+      }
+
+    case m @ DoBindMobile(email, newMobile) =>
+      manager.getUser(email) match {
+        case Some(profile) =>
+          val newProfile = profile.copy(mobile = Some(newMobile), mobileVerified = true)
+          sender ! DoBindMobileSucceeded(profile.id, newMobile)
+          persist(DoUpdateUserProfile(newProfile))(updateState)
+        case None =>
+          sender ! DoBindMobileFailed(UserNotExist)
       }
 
     case m @ DoSuspendUser(uid) =>
@@ -122,7 +150,7 @@ class UserProcessor(mailer: ActorRef, secret: String)
     case Login(email, password) =>
       manager.checkLogin(email, password) match {
         case Left(error) => sender ! LoginFailed(error)
-        case Right(profile) => sender ! LoginSucceeded(profile.id, profile.email)
+        case Right(profile) => sender ! LoginSucceeded(profile.id, profile.email, profile.referralToken, profile.mobile, profile.realName, profile.googleAuthenticatorSecret, profile.securityPreference)
       }
 
     case ValidatePasswordResetToken(token) =>
@@ -161,7 +189,12 @@ class UserProcessor(mailer: ActorRef, secret: String)
       if (recoveryFinished) sendRequestPasswordResetEmail(manager.getUser(email).get)
 
     case DoResetPassword(password, token) => manager.resetPassword(password, token)
+    case DoChangePassword(email, oldPassword, newPassword) => manager.changePassword(email, newPassword)
     case VerifyEmail(token) => manager.verifyEmail(token)
+  }
+
+  private def sendVerificationCodeEmail(email: String, code: String) {
+    mailer ! DoSendEmail(email, EmailType.VerificationCode, Map("CODE" -> code))
   }
 
   private def sendEmailVerificationEmail(profile: UserProfile) {

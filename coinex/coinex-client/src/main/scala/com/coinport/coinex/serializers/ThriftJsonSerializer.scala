@@ -47,10 +47,12 @@ class ThriftJsonSerializer extends Serializer {
   lazy val _cOrder = JsonScalaCodec(Order)
   lazy val _cOrderInfo = JsonScalaCodec(OrderInfo)
   lazy val _cOrderUpdate = JsonScalaCodec(OrderUpdate)
+  lazy val _cPayment = JsonScalaCodec(Payment)
   lazy val _cQueryMarketSide = JsonScalaCodec(QueryMarketSide)
   lazy val _cRDouble = JsonScalaCodec(RDouble)
   lazy val _cRedeliverFilterData = JsonScalaCodec(RedeliverFilterData)
   lazy val _cRedeliverFilters = JsonScalaCodec(RedeliverFilters)
+  lazy val _cReferralParams = JsonScalaCodec(ReferralParams)
   lazy val _cRefund = JsonScalaCodec(Refund)
   lazy val _cSpanCursor = JsonScalaCodec(SpanCursor)
   lazy val _cTAddressStatus = JsonScalaCodec(TAddressStatus)
@@ -85,8 +87,14 @@ class ThriftJsonSerializer extends Serializer {
   lazy val _cCryptoTransferSucceeded = JsonScalaCodec(CryptoTransferSucceeded)
   lazy val _cDoAddNewApiSecret = JsonScalaCodec(DoAddNewApiSecret)
   lazy val _cDoAddRobotDNA = JsonScalaCodec(DoAddRobotDNA)
+  lazy val _cDoBindMobile = JsonScalaCodec(DoBindMobile)
+  lazy val _cDoBindMobileFailed = JsonScalaCodec(DoBindMobileFailed)
+  lazy val _cDoBindMobileSucceeded = JsonScalaCodec(DoBindMobileSucceeded)
   lazy val _cDoCancelOrder = JsonScalaCodec(DoCancelOrder)
   lazy val _cDoCancelTransfer = JsonScalaCodec(DoCancelTransfer)
+  lazy val _cDoChangePassword = JsonScalaCodec(DoChangePassword)
+  lazy val _cDoChangePasswordFailed = JsonScalaCodec(DoChangePasswordFailed)
+  lazy val _cDoChangePasswordSucceeded = JsonScalaCodec(DoChangePasswordSucceeded)
   lazy val _cDoDeleteApiSecret = JsonScalaCodec(DoDeleteApiSecret)
   lazy val _cDoRegisterUser = JsonScalaCodec(DoRegisterUser)
   lazy val _cDoRemoveRobotDNA = JsonScalaCodec(DoRemoveRobotDNA)
@@ -95,11 +103,13 @@ class ThriftJsonSerializer extends Serializer {
   lazy val _cDoRequestConfirmRC = JsonScalaCodec(DoRequestConfirmRC)
   lazy val _cDoRequestGenerateABCode = JsonScalaCodec(DoRequestGenerateABCode)
   lazy val _cDoRequestPasswordReset = JsonScalaCodec(DoRequestPasswordReset)
+  lazy val _cDoRequestPayment = JsonScalaCodec(DoRequestPayment)
   lazy val _cDoRequestTransfer = JsonScalaCodec(DoRequestTransfer)
   lazy val _cDoResendVerifyEmail = JsonScalaCodec(DoResendVerifyEmail)
   lazy val _cDoResetPassword = JsonScalaCodec(DoResetPassword)
   lazy val _cDoResumeUser = JsonScalaCodec(DoResumeUser)
   lazy val _cDoSendEmail = JsonScalaCodec(DoSendEmail)
+  lazy val _cDoSendVerificationCodeEmail = JsonScalaCodec(DoSendVerificationCodeEmail)
   lazy val _cDoSimulateOrderSubmission = JsonScalaCodec(DoSimulateOrderSubmission)
   lazy val _cDoSubmitOrder = JsonScalaCodec(DoSubmitOrder)
   lazy val _cDoSuspendUser = JsonScalaCodec(DoSuspendUser)
@@ -174,6 +184,7 @@ class ThriftJsonSerializer extends Serializer {
   lazy val _cRequestGenerateABCodeSucceeded = JsonScalaCodec(RequestGenerateABCodeSucceeded)
   lazy val _cRequestPasswordResetFailed = JsonScalaCodec(RequestPasswordResetFailed)
   lazy val _cRequestPasswordResetSucceeded = JsonScalaCodec(RequestPasswordResetSucceeded)
+  lazy val _cRequestPaymentResult = JsonScalaCodec(RequestPaymentResult)
   lazy val _cRequestTransferFailed = JsonScalaCodec(RequestTransferFailed)
   lazy val _cRequestTransferSucceeded = JsonScalaCodec(RequestTransferSucceeded)
   lazy val _cResendVerifyEmailFailed = JsonScalaCodec(ResendVerifyEmailFailed)
@@ -181,6 +192,8 @@ class ThriftJsonSerializer extends Serializer {
   lazy val _cResetPasswordFailed = JsonScalaCodec(ResetPasswordFailed)
   lazy val _cResetPasswordSucceeded = JsonScalaCodec(ResetPasswordSucceeded)
   lazy val _cResumeUserResult = JsonScalaCodec(ResumeUserResult)
+  lazy val _cSendVerificationCodeEmailFailed = JsonScalaCodec(SendVerificationCodeEmailFailed)
+  lazy val _cSendVerificationCodeEmailSucceeded = JsonScalaCodec(SendVerificationCodeEmailSucceeded)
   lazy val _cSetNotification = JsonScalaCodec(SetNotification)
   lazy val _cSubmitOrderFailed = JsonScalaCodec(SubmitOrderFailed)
   lazy val _cSuspendUserResult = JsonScalaCodec(SuspendUserResult)
@@ -244,10 +257,12 @@ class ThriftJsonSerializer extends Serializer {
     case m: Order => _cOrder(m)
     case m: OrderInfo => _cOrderInfo(m)
     case m: OrderUpdate => _cOrderUpdate(m)
+    case m: Payment => _cPayment(m)
     case m: QueryMarketSide => _cQueryMarketSide(m)
     case m: RDouble => _cRDouble(m)
     case m: RedeliverFilterData => _cRedeliverFilterData(m)
     case m: RedeliverFilters => _cRedeliverFilters(m)
+    case m: ReferralParams => _cReferralParams(m)
     case m: Refund => _cRefund(m)
     case m: SpanCursor => _cSpanCursor(m)
     case m: TAddressStatus => _cTAddressStatus(m)
@@ -282,8 +297,14 @@ class ThriftJsonSerializer extends Serializer {
     case m: CryptoTransferSucceeded => _cCryptoTransferSucceeded(m)
     case m: DoAddNewApiSecret => _cDoAddNewApiSecret(m)
     case m: DoAddRobotDNA => _cDoAddRobotDNA(m)
+    case m: DoBindMobile => _cDoBindMobile(m)
+    case m: DoBindMobileFailed => _cDoBindMobileFailed(m)
+    case m: DoBindMobileSucceeded => _cDoBindMobileSucceeded(m)
     case m: DoCancelOrder => _cDoCancelOrder(m)
     case m: DoCancelTransfer => _cDoCancelTransfer(m)
+    case m: DoChangePassword => _cDoChangePassword(m)
+    case m: DoChangePasswordFailed => _cDoChangePasswordFailed(m)
+    case m: DoChangePasswordSucceeded => _cDoChangePasswordSucceeded(m)
     case m: DoDeleteApiSecret => _cDoDeleteApiSecret(m)
     case m: DoRegisterUser => _cDoRegisterUser(m)
     case m: DoRemoveRobotDNA => _cDoRemoveRobotDNA(m)
@@ -292,11 +313,13 @@ class ThriftJsonSerializer extends Serializer {
     case m: DoRequestConfirmRC => _cDoRequestConfirmRC(m)
     case m: DoRequestGenerateABCode => _cDoRequestGenerateABCode(m)
     case m: DoRequestPasswordReset => _cDoRequestPasswordReset(m)
+    case m: DoRequestPayment => _cDoRequestPayment(m)
     case m: DoRequestTransfer => _cDoRequestTransfer(m)
     case m: DoResendVerifyEmail => _cDoResendVerifyEmail(m)
     case m: DoResetPassword => _cDoResetPassword(m)
     case m: DoResumeUser => _cDoResumeUser(m)
     case m: DoSendEmail => _cDoSendEmail(m)
+    case m: DoSendVerificationCodeEmail => _cDoSendVerificationCodeEmail(m)
     case m: DoSimulateOrderSubmission => _cDoSimulateOrderSubmission(m)
     case m: DoSubmitOrder => _cDoSubmitOrder(m)
     case m: DoSuspendUser => _cDoSuspendUser(m)
@@ -371,6 +394,7 @@ class ThriftJsonSerializer extends Serializer {
     case m: RequestGenerateABCodeSucceeded => _cRequestGenerateABCodeSucceeded(m)
     case m: RequestPasswordResetFailed => _cRequestPasswordResetFailed(m)
     case m: RequestPasswordResetSucceeded => _cRequestPasswordResetSucceeded(m)
+    case m: RequestPaymentResult => _cRequestPaymentResult(m)
     case m: RequestTransferFailed => _cRequestTransferFailed(m)
     case m: RequestTransferSucceeded => _cRequestTransferSucceeded(m)
     case m: ResendVerifyEmailFailed => _cResendVerifyEmailFailed(m)
@@ -378,6 +402,8 @@ class ThriftJsonSerializer extends Serializer {
     case m: ResetPasswordFailed => _cResetPasswordFailed(m)
     case m: ResetPasswordSucceeded => _cResetPasswordSucceeded(m)
     case m: ResumeUserResult => _cResumeUserResult(m)
+    case m: SendVerificationCodeEmailFailed => _cSendVerificationCodeEmailFailed(m)
+    case m: SendVerificationCodeEmailSucceeded => _cSendVerificationCodeEmailSucceeded(m)
     case m: SetNotification => _cSetNotification(m)
     case m: SubmitOrderFailed => _cSubmitOrderFailed(m)
     case m: SuspendUserResult => _cSuspendUserResult(m)
@@ -445,10 +471,12 @@ class ThriftJsonSerializer extends Serializer {
     case Some(c) if c == classOf[Order.Immutable] => _cOrder.invert(bytes).get
     case Some(c) if c == classOf[OrderInfo.Immutable] => _cOrderInfo.invert(bytes).get
     case Some(c) if c == classOf[OrderUpdate.Immutable] => _cOrderUpdate.invert(bytes).get
+    case Some(c) if c == classOf[Payment.Immutable] => _cPayment.invert(bytes).get
     case Some(c) if c == classOf[QueryMarketSide.Immutable] => _cQueryMarketSide.invert(bytes).get
     case Some(c) if c == classOf[RDouble.Immutable] => _cRDouble.invert(bytes).get
     case Some(c) if c == classOf[RedeliverFilterData.Immutable] => _cRedeliverFilterData.invert(bytes).get
     case Some(c) if c == classOf[RedeliverFilters.Immutable] => _cRedeliverFilters.invert(bytes).get
+    case Some(c) if c == classOf[ReferralParams.Immutable] => _cReferralParams.invert(bytes).get
     case Some(c) if c == classOf[Refund.Immutable] => _cRefund.invert(bytes).get
     case Some(c) if c == classOf[SpanCursor.Immutable] => _cSpanCursor.invert(bytes).get
     case Some(c) if c == classOf[TAddressStatus.Immutable] => _cTAddressStatus.invert(bytes).get
@@ -483,8 +511,14 @@ class ThriftJsonSerializer extends Serializer {
     case Some(c) if c == classOf[CryptoTransferSucceeded.Immutable] => _cCryptoTransferSucceeded.invert(bytes).get
     case Some(c) if c == classOf[DoAddNewApiSecret.Immutable] => _cDoAddNewApiSecret.invert(bytes).get
     case Some(c) if c == classOf[DoAddRobotDNA.Immutable] => _cDoAddRobotDNA.invert(bytes).get
+    case Some(c) if c == classOf[DoBindMobile.Immutable] => _cDoBindMobile.invert(bytes).get
+    case Some(c) if c == classOf[DoBindMobileFailed.Immutable] => _cDoBindMobileFailed.invert(bytes).get
+    case Some(c) if c == classOf[DoBindMobileSucceeded.Immutable] => _cDoBindMobileSucceeded.invert(bytes).get
     case Some(c) if c == classOf[DoCancelOrder.Immutable] => _cDoCancelOrder.invert(bytes).get
     case Some(c) if c == classOf[DoCancelTransfer.Immutable] => _cDoCancelTransfer.invert(bytes).get
+    case Some(c) if c == classOf[DoChangePassword.Immutable] => _cDoChangePassword.invert(bytes).get
+    case Some(c) if c == classOf[DoChangePasswordFailed.Immutable] => _cDoChangePasswordFailed.invert(bytes).get
+    case Some(c) if c == classOf[DoChangePasswordSucceeded.Immutable] => _cDoChangePasswordSucceeded.invert(bytes).get
     case Some(c) if c == classOf[DoDeleteApiSecret.Immutable] => _cDoDeleteApiSecret.invert(bytes).get
     case Some(c) if c == classOf[DoRegisterUser.Immutable] => _cDoRegisterUser.invert(bytes).get
     case Some(c) if c == classOf[DoRemoveRobotDNA.Immutable] => _cDoRemoveRobotDNA.invert(bytes).get
@@ -493,11 +527,13 @@ class ThriftJsonSerializer extends Serializer {
     case Some(c) if c == classOf[DoRequestConfirmRC.Immutable] => _cDoRequestConfirmRC.invert(bytes).get
     case Some(c) if c == classOf[DoRequestGenerateABCode.Immutable] => _cDoRequestGenerateABCode.invert(bytes).get
     case Some(c) if c == classOf[DoRequestPasswordReset.Immutable] => _cDoRequestPasswordReset.invert(bytes).get
+    case Some(c) if c == classOf[DoRequestPayment.Immutable] => _cDoRequestPayment.invert(bytes).get
     case Some(c) if c == classOf[DoRequestTransfer.Immutable] => _cDoRequestTransfer.invert(bytes).get
     case Some(c) if c == classOf[DoResendVerifyEmail.Immutable] => _cDoResendVerifyEmail.invert(bytes).get
     case Some(c) if c == classOf[DoResetPassword.Immutable] => _cDoResetPassword.invert(bytes).get
     case Some(c) if c == classOf[DoResumeUser.Immutable] => _cDoResumeUser.invert(bytes).get
     case Some(c) if c == classOf[DoSendEmail.Immutable] => _cDoSendEmail.invert(bytes).get
+    case Some(c) if c == classOf[DoSendVerificationCodeEmail.Immutable] => _cDoSendVerificationCodeEmail.invert(bytes).get
     case Some(c) if c == classOf[DoSimulateOrderSubmission.Immutable] => _cDoSimulateOrderSubmission.invert(bytes).get
     case Some(c) if c == classOf[DoSubmitOrder.Immutable] => _cDoSubmitOrder.invert(bytes).get
     case Some(c) if c == classOf[DoSuspendUser.Immutable] => _cDoSuspendUser.invert(bytes).get
@@ -572,6 +608,7 @@ class ThriftJsonSerializer extends Serializer {
     case Some(c) if c == classOf[RequestGenerateABCodeSucceeded.Immutable] => _cRequestGenerateABCodeSucceeded.invert(bytes).get
     case Some(c) if c == classOf[RequestPasswordResetFailed.Immutable] => _cRequestPasswordResetFailed.invert(bytes).get
     case Some(c) if c == classOf[RequestPasswordResetSucceeded.Immutable] => _cRequestPasswordResetSucceeded.invert(bytes).get
+    case Some(c) if c == classOf[RequestPaymentResult.Immutable] => _cRequestPaymentResult.invert(bytes).get
     case Some(c) if c == classOf[RequestTransferFailed.Immutable] => _cRequestTransferFailed.invert(bytes).get
     case Some(c) if c == classOf[RequestTransferSucceeded.Immutable] => _cRequestTransferSucceeded.invert(bytes).get
     case Some(c) if c == classOf[ResendVerifyEmailFailed.Immutable] => _cResendVerifyEmailFailed.invert(bytes).get
@@ -579,6 +616,8 @@ class ThriftJsonSerializer extends Serializer {
     case Some(c) if c == classOf[ResetPasswordFailed.Immutable] => _cResetPasswordFailed.invert(bytes).get
     case Some(c) if c == classOf[ResetPasswordSucceeded.Immutable] => _cResetPasswordSucceeded.invert(bytes).get
     case Some(c) if c == classOf[ResumeUserResult.Immutable] => _cResumeUserResult.invert(bytes).get
+    case Some(c) if c == classOf[SendVerificationCodeEmailFailed.Immutable] => _cSendVerificationCodeEmailFailed.invert(bytes).get
+    case Some(c) if c == classOf[SendVerificationCodeEmailSucceeded.Immutable] => _cSendVerificationCodeEmailSucceeded.invert(bytes).get
     case Some(c) if c == classOf[SetNotification.Immutable] => _cSetNotification.invert(bytes).get
     case Some(c) if c == classOf[SubmitOrderFailed.Immutable] => _cSubmitOrderFailed.invert(bytes).get
     case Some(c) if c == classOf[SuspendUserResult.Immutable] => _cSuspendUserResult.invert(bytes).get

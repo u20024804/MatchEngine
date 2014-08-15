@@ -44,7 +44,7 @@ object AccountService extends AkkaService {
       case result: RequestTransferSucceeded =>
         ApiResult(true, 0, "提现申请已提交", Some(result))
       case failed: RequestTransferFailed =>
-        ApiResult(false, 1, "提现失败", Some(failed))
+        ApiResult(false, failed.error.getValue(), "提现失败", Some(failed))
     }
   }
 
@@ -71,7 +71,7 @@ object AccountService extends AkkaService {
     }
   }
 
-  def getOrders(marketSide: Option[MarketSide], uid: Option[Long], id: Option[Long], status: Option[OrderStatus], skip: Int, limit: Int): Future[ApiResult] = {
+  def getOrders(marketSide: Option[MarketSide], uid: Option[Long], id: Option[Long], status: Seq[OrderStatus], skip: Int, limit: Int): Future[ApiResult] = {
     val cursor = Cursor(skip, limit)
     val querySide = marketSide.map(side => QueryMarketSide(side, true))
     backend ? QueryOrder(uid, id, status.map(_.getValue), querySide, cursor) map {

@@ -56,6 +56,7 @@ typedef data.CryptoAddress                      _CryptoAddress
 typedef data.TFeeConfig                         _TFeeConfig
 typedef data.Language                           _Language
 typedef data.ReferralParams                     _ReferralParams
+typedef data.Payment                            _Payment
 
 ///////////////////////////////////////////////////////////////////////
 // 'C' stands for external command,
@@ -87,6 +88,10 @@ typedef data.ReferralParams                     _ReferralParams
 /* R-   */ struct ResendVerifyEmailFailed                 {1: _ErrorCode error}
 /* R+   */ struct ResendVerifyEmailSucceeded              {1: i64 id, 2: string email}
 
+/* C,P  */ struct DoSendVerificationCodeEmail             {1: string email, 2: string verificationCode}
+/* R-   */ struct SendVerificationCodeEmailFailed         {1: _ErrorCode error}
+/* R+   */ struct SendVerificationCodeEmailSucceeded      {1: i64 id, 2: string email}
+
 /* C,P  */ struct VerifyEmail                             {1: string token}
 /* R-   */ struct VerifyEmailFailed                       {1: _ErrorCode error}
 /* R+   */ struct VerifyEmailSucceeded                    {1: i64 id, 2: string email}
@@ -112,14 +117,25 @@ typedef data.ReferralParams                     _ReferralParams
 /* R-   */ struct ResetPasswordFailed                     {1: _ErrorCode error}
 /* R+   */ struct ResetPasswordSucceeded                  {1: i64 id, 2: string email}
 
+/* C,P  */ struct DoChangePassword                         {1: string email, 2: string oldPassword, 3: string newPassword}
+/* R-   */ struct DoChangePasswordFailed                   {1: _ErrorCode error}
+/* R+   */ struct DoChangePasswordSucceeded                {1: i64 id, 2: string email}
+
+/* C,P  */ struct DoBindMobile                             {1: string email, 2: string newMobile}
+/* R-   */ struct DoBindMobileFailed                       {1: _ErrorCode error}
+/* R+   */ struct DoBindMobileSucceeded                    {1: i64 id, 2: string mobile}
+
 /* C    */ struct Login                                   {1: string email, 2: string password} // TODO: this may also be a persistent command
 /* R-   */ struct LoginFailed                             {1: _ErrorCode error}
-/* R+   */ struct LoginSucceeded                          {1: i64 id, 2: string email}
+/* R+   */ struct LoginSucceeded                          {1: i64 id, 2: string email, 3: optional i64 referralToken, 4: optional string mobile, 5: optional string realName, 6: optional string googleSecret, 7: optional string perference}
 
 /* Q    */ struct VerifyGoogleAuthCode                    {1: string email, 2: i32 code}
 /* R    */ struct GoogleAuthCodeVerificationResult        {1: optional _UserProfile userProfile}
 
-/* C,P  */ struct DoRequestTransfer                       {1: _AccountTransfer transfer}
+/* C,P  */ struct DoRequestPayment                        {1: _Payment payment}
+/* R    */ struct RequestPaymentResult                    {1: _Currency currency, 2: _ErrorCode error}
+
+/* C,P  */ struct DoRequestTransfer                       {1: _AccountTransfer transfer, 2: optional bool transferDebug}
 /* R-   */ struct RequestTransferFailed                   {1: _ErrorCode error}
 /* R+   */ struct RequestTransferSucceeded                {1: _AccountTransfer transfer}
 
@@ -129,7 +145,7 @@ typedef data.ReferralParams                     _ReferralParams
 
 /* C,P  */ struct DoCancelTransfer                        {1: _AccountTransfer transfer}
 /* C,P  */ struct AdminConfirmTransferFailure             {1: _AccountTransfer transfer, 2:_ErrorCode error}
-/* C,P  */ struct AdminConfirmTransferSuccess             {1: _AccountTransfer transfer}
+/* C,P  */ struct AdminConfirmTransferSuccess             {1: _AccountTransfer transfer, 2: optional bool transferDebug}
 
 /* C,P  */ struct DoRequestGenerateABCode                 {1: i64 userId, 2: i64 amount, 3: optional string a, 4: optional string b}
 /* R-   */ struct RequestGenerateABCodeFailed             {1: _ErrorCode error}
@@ -185,10 +201,10 @@ typedef data.ReferralParams                     _ReferralParams
 /* C    */ struct AllocateNewAddress                      {1: _Currency currency, 2: i64 userId, 3: optional string assignedAddress}
 /* R    */ struct AllocateNewAddressResult                {1: _Currency currency, 2: _ErrorCode error = data.ErrorCode.OK, 3: optional string address}
 /* C,I  */ struct TransferCryptoCurrency                  {1: _Currency currency, 2: list<_CryptoCurrencyTransferInfo> transferInfos, 3: _TransferType type}
-/* R    */ struct TransferCryptoCurrencyResult            {1: _Currency currency, 2: _ErrorCode error = data.ErrorCode.OK, 3: optional TransferCryptoCurrency request}
+/* R    */ struct TransferCryptoCurrencyResult            {1: _Currency currency, 2: _ErrorCode error = data.ErrorCode.OK, 3: optional TransferCryptoCurrency request, 4: optional i64 timestamp}
 /* C,I  */ struct MultiTransferCryptoCurrency             {1: _Currency currency, 2: map<_TransferType, list<_CryptoCurrencyTransferInfo>> transferInfos}
-/* R    */ struct MultiTransferCryptoCurrencyResult       {1: _Currency currency, 2: _ErrorCode error = data.ErrorCode.OK, 3: optional map<_TransferType, list<_CryptoCurrencyTransferInfo>> transferInfos}
-/* I    */ struct MultiCryptoCurrencyTransactionMessage   {1: _Currency currency, 2: list<_CryptoCurrencyTransaction> txs, 3: optional _BlockIndex reorgIndex}
+/* R    */ struct MultiTransferCryptoCurrencyResult       {1: _Currency currency, 2: _ErrorCode error = data.ErrorCode.OK, 3: optional map<_TransferType, list<_CryptoCurrencyTransferInfo>> transferInfos, 4: optional i64 timestamp}
+/* I    */ struct MultiCryptoCurrencyTransactionMessage   {1: _Currency currency, 2: list<_CryptoCurrencyTransaction> txs, 3: optional _BlockIndex reorgIndex, 4: optional i32 confirmNum, 5: optional i64 timestamp}
 /* Q    */ struct QueryCryptoCurrencyAddressStatus        {1: _Currency currency, 2: _CryptoCurrencyAddressType addressType}
 /* R    */ struct QueryCryptoCurrencyAddressStatusResult  {1: _Currency currency, 2: map<string, _AddressStatusResult> status}
 /* Q    */ struct QueryCryptoCurrencyNetworkStatus        {1: _Currency currency}
@@ -261,7 +277,7 @@ typedef data.ReferralParams                     _ReferralParams
 /* R    */ struct QueryCandleDataResult                   {1: _CandleData candleData}
 
 ////////// OrderView
-/* Q    */ struct QueryOrder                              {1: optional i64 uid, 2: optional i64 oid, 3:optional i32 status, 4:optional _QueryMarketSide side, 5: _Cursor cursor}
+/* Q    */ struct QueryOrder                              {1: optional i64 uid, 2: optional i64 oid, 3:list<i32> statusList, 4:optional _QueryMarketSide side, 5: _Cursor cursor}
 /* R    */ struct QueryOrderResult                        {1: list<_OrderInfo> orderinfos, 2: i64 count}
 
 ////////// TransactionView

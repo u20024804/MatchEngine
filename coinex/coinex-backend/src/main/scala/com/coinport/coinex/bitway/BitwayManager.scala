@@ -21,7 +21,8 @@ object BlockContinuityEnum extends Enumeration {
   val SUCCESSOR, GAP, REORG, OTHER_BRANCH, DUP, BAD = Value
 }
 
-class BitwayManager(supportedCurrency: Currency, maintainedChainLength: Int, coldAddresses: List[String])
+class BitwayManager(supportedCurrency: Currency, maintainedChainLength: Int, coldAddresses: List[String],
+  hotColdTransfer: Option[HotColdTransferStrategy] = None, hotColdTransferNumThreshold: Long = 20L)
     extends Manager[TBitwayState] with Logging {
 
   import CryptoCurrencyAddressType._
@@ -45,8 +46,7 @@ class BitwayManager(supportedCurrency: Currency, maintainedChainLength: Int, col
   val INIT_ADDRESS_NUM: Int = 100
 
   if (coldAddresses.nonEmpty)
-    faucetAddress(CryptoCurrencyAddressType.Cold,
-      Set.empty[CryptoAddress] ++ coldAddresses.map(CryptoAddress(_)))
+    syncColdAddresses(coldAddresses)
 
   def getSnapshot = TBitwayState(
     supportedCurrency,
@@ -79,8 +79,7 @@ class BitwayManager(supportedCurrency: Currency, maintainedChainLength: Int, col
     }
 
     if (coldAddresses.nonEmpty)
-      faucetAddress(CryptoCurrencyAddressType.Cold,
-        Set.empty[CryptoAddress] ++ coldAddresses.map(CryptoAddress(_)))
+      syncColdAddresses(coldAddresses)
   }
 
   def isDryUp = addresses(Unused).size == 0 || addresses(User).size > addresses(Unused).size * FAUCET_THRESHOLD
@@ -156,16 +155,20 @@ class BitwayManager(supportedCurrency: Currency, maintainedChainLength: Int, col
     if (inputsMatched.contains(USER) && outputsMatched.contains(HOT)) {
       Some(TransferType.UserToHot)
     } else if (inputsMatched.contains(HOT)) {
-      assert(!outputsMatched.contains(USER))
-      if (outputsMatched.contains(COLD)) {
+      if (outputsMatched.contains(COLD))
         Some(TransferType.HotToCold)
-      } else {
+      else
         Some(TransferType.Withdrawal)
-      }
-    } else if (inputsMatched.contains(COLD) && outputsMatched.contains(HOT)) {
-      Some(TransferType.ColdToHot)
+    } else if (inputsMatched.contains(COLD)) {
+      if (outputsMatched.contains(HOT))
+        Some(TransferType.ColdToHot)
+      else
+        Some(TransferType.Withdrawal)
     } else if (outputsMatched.contains(USER)) {
-      Some(TransferType.Deposit)
+      if (!inputsMatched.contains(USER))
+        Some(TransferType.Deposit)
+      else
+        Some(TransferType.Unknown)
     } else if (inputsMatched.nonEmpty || outputsMatched.nonEmpty) {
       Some(TransferType.Unknown)
     } else {
@@ -214,7 +217,7 @@ class BitwayManager(supportedCurrency: Currency, maintainedChainLength: Int, col
     isHotToCold: Boolean = false): (List[CryptoCurrencyTransferInfo], Boolean /* isFail */ ) = {
     if (isHotToCold) {
       if (addresses(Cold).isEmpty) {
-        (infos.toList, true)
+        (infos.map(i => i.copy(error = Some(ErrorCode.NoAddressFound))).toList, true)
       } else {
         (infos.map(info => info.copy(amount = info.internalAmount.map((new CurrencyWrapper(_).externalValue(
           supportedCurrency))), to = Some(addresses(Cold).head))).toList, false)
@@ -233,8 +236,12 @@ class BitwayManager(supportedCurrency: Currency, maintainedChainLength: Int, col
     if (!inputs.isDefined || !outputs.isDefined) {
       None
     } else {
-      val txType = getTransferType(Set.empty[String] ++ inputs.get.map(_.address),
-        Set.empty[String] ++ outputs.get.map(_.address))
+      val txType =
+        if (tx.txType.isDefined)
+          tx.txType
+        else
+          getTransferType(Set.empty[String] ++ inputs.get.map(_.address),
+            Set.empty[String] ++ outputs.get.map(_.address))
       if (txType.isDefined) {
         val regularizeInputs = inputs.map(_.map(i => i.copy(
           internalAmount = i.amount.map(new CurrencyWrapper(_).internalValue(supportedCurrency)),
@@ -322,9 +329,18 @@ class BitwayManager(supportedCurrency: Currency, maintainedChainLength: Int, col
     status.getAmount(getCurrentHeight, 1)
   }
 
-  def includeWithdrawalToDepositAddress(infos: Seq[CryptoCurrencyTransferInfo]): Boolean = {
-    infos.exists(info => (info.to.isDefined && info.from.isDefined &&
-      addresses(Hot).contains(info.from.get) && addresses(User).contains(info.to.get)))
+  def includeWithdrawalToBadAddress(transferType: TransferType, infos: Seq[CryptoCurrencyTransferInfo]): Boolean = {
+    if (transferType == TransferType.Withdrawal) {
+      infos.exists(info => isWithdrawalToBadAddress(info))
+    } else {
+      false
+    }
+  }
+
+  def isWithdrawalToBadAddress(info: CryptoCurrencyTransferInfo): Boolean = {
+    info.to.isDefined && (addresses(User).contains(info.to.get) ||
+      addresses(Hot).contains(info.to.get) || addresses(Cold).contains(info.to.get)
+    )
   }
 
   def syncPrivateKeys(keys: List[CryptoAddress]) {
@@ -341,8 +357,38 @@ class BitwayManager(supportedCurrency: Currency, maintainedChainLength: Int, col
       faucetAddress(Hot, unseenAddresses)
   }
 
+  def syncColdAddresses(addrs: List[String]) {
+    val origAddresses = addresses.getOrElse(Cold, Set.empty[String])
+    val unseenAddresses = addrs.filter(i => !origAddresses.contains(i))
+    if (unseenAddresses.size > 0)
+      faucetAddress(Cold, Set.empty[CryptoAddress] ++ unseenAddresses.map(CryptoAddress(_)))
+  }
+
   def cleanBlockChain() {
     blockIndexes.clear
+  }
+
+  // for return value amount, +amount means transfer from hot to cold;
+  //                          -amount means transfer from cold to hot.
+  def needHotColdTransfer(): Option[Long] = {
+    val hotAmount = getReserveAmount(CryptoCurrencyAddressType.Hot)
+    if (hotAmount <= hotColdTransferNumThreshold) {
+      return None
+    }
+    val coldAmount = getReserveAmount(CryptoCurrencyAddressType.Cold)
+    val HotColdTransferStrategy(highThreshold, lowThreshold) = hotColdTransfer.getOrElse(HotColdTransferStrategy(1, 0))
+    val mid = (highThreshold + lowThreshold) / 2
+    val allAmount = hotAmount + coldAmount
+    if (allAmount == 0) {
+      None
+    } else {
+      val hotPercent = hotAmount.toDouble / allAmount
+      if (hotPercent <= highThreshold && hotPercent >= lowThreshold) {
+        None
+      } else {
+        Some((hotAmount - allAmount * mid).toLong)
+      }
+    }
   }
 
   private def getCurrentHeight: Option[Long] = {
@@ -389,5 +435,5 @@ class BitwayManager(supportedCurrency: Currency, maintainedChainLength: Int, col
       blockIndexes.remove(0, blockIndexes.length - maintainedChainLength)
   }
 
-  private def getReserveAmount(t: CryptoCurrencyAddressType) = getAddressStatus(t).values.map(_.confirmedAmount).sum
+  def getReserveAmount(t: CryptoCurrencyAddressType) = getAddressStatus(t).values.map(_.confirmedAmount).sum
 }

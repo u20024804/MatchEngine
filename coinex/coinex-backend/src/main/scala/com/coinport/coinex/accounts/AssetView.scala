@@ -37,6 +37,19 @@ class AssetView extends ExtendedView {
         case _ =>
       }
 
+    case Persistent(result: CryptoTransferResult, _) =>
+      result.multiTransfers.values foreach {
+        tmf =>
+          tmf.transfers.filter(_.status == TransferStatus.Succeeded).foreach {
+            t =>
+              t.`type` match {
+                case Deposit => manager.updateAsset(t.userId, t.updated.get, t.currency, t.amount)
+                case Withdrawal => manager.updateAsset(t.userId, t.updated.get, t.currency, -t.amount)
+                case _ =>
+              }
+          }
+      }
+
     case e @ Persistent(OrderSubmitted(originOrderInfo, txs), _) =>
       if (!txs.isEmpty) {
         val side = originOrderInfo.side
@@ -65,6 +78,10 @@ class AssetView extends ExtendedView {
         manager.updatePrice(side, timestamp, txs.last.makerUpdate.current.price.get.reciprocal.value)
         manager.updatePrice(side.reverse, timestamp, txs.last.makerUpdate.current.price.get.value)
       }
+
+    case Persistent(m: DoRequestPayment, _) =>
+      manager.updateAsset(m.payment.payer, m.payment.created.getOrElse(0), m.payment.currency, -m.payment.amount)
+      manager.updateAsset(m.payment.payee, m.payment.created.getOrElse(0), m.payment.currency, m.payment.amount)
 
     case q: QueryAsset =>
       val start = Math.min(q.from, q.to)

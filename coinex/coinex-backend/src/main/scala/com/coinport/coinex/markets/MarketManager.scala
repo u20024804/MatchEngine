@@ -161,12 +161,28 @@ class MarketManager(val headSide: MarketSide) extends Manager[TMarketState] with
           val (updatedMakerToAddBack, refund) = calculateRefund(updatedMaker, false)
           val updatedMakerWithRefund = updatedMaker.copy(refund = refund)
 
-          txsBuffer += Transaction(
+          val tx = Transaction(
             getTxId(),
             takerOrder.timestamp.getOrElse(0), // Always use taker's timestamp as transaction timestamp
             takerSide,
             takerOrder --> updatedTaker,
             makerOrder --> updatedMakerWithRefund)
+
+          txsBuffer += tx
+
+          // Make sure maker's quantity is correctly split into: payout, refund, and in-market left-over.
+          {
+            val leftoverQuantity: Long = updatedMakerToAddBack.map(_.quantity).getOrElse(0L)
+            val payoutQuantity: Long = tx.makerUpdate.outAmount
+            val refundQuantity: Long = tx.makerUpdate.current.refund.map(_.amount).getOrElse(0L)
+            val total = leftoverQuantity + payoutQuantity + refundQuantity
+
+            assert(total == makerOrder.quantity,
+              s"market math error for maker: leftoverQuantity(${leftoverQuantity}) + " +
+                s"payoutQuantity(${payoutQuantity}) + refundQuantity(${refundQuantity}) == " +
+                s"total(${total}), but original maker order quantity is ${order.quantity}"
+            )
+          }
 
           updatedMakerToAddBack match {
             case Some(makerOrder) =>
@@ -214,16 +230,15 @@ class MarketManager(val headSide: MarketSide) extends Manager[TMarketState] with
         OrderStatus.Unknown
     }
 
-    val updatedOriginalOrder =
-      if (txsBuffer.nonEmpty && refund.isDefined) {
-        val lastTx = txsBuffer.last
-        val updatedTaker = lastTx.takerUpdate.current.copy(refund = refund)
+    if (txsBuffer.nonEmpty && refund.isDefined) {
+      val lastTx = txsBuffer.last
+      val updatedTaker = lastTx.takerUpdate.current.copy(refund = refund)
 
-        txsBuffer.trimEnd(1)
-        // If there is a over-charge refund, the current order in takerUpdate will still
-        // show the quantity before the refund.
-        txsBuffer += lastTx.copy(takerUpdate = lastTx.takerUpdate.copy(current = updatedTaker))
-      }
+      txsBuffer.trimEnd(1)
+      // If there is a over-charge refund, the current order in takerUpdate will still
+      // show the quantity before the refund.
+      txsBuffer += lastTx.copy(takerUpdate = lastTx.takerUpdate.copy(current = updatedTaker))
+    }
 
     val txs = txsBuffer.toSeq
     // If there is a over-charge refund, the order inside originOrderInfo will still
@@ -259,6 +274,21 @@ class MarketManager(val headSide: MarketSide) extends Manager[TMarketState] with
       log.error(s"price product: ${headSideHeadOrder.price.get} * ${reverseSideHeadOrder.price.get} = ${product}")
       log.error(s"top buying and selling orders have conflict prices:\n${headSide}: ${headSideHeadOrder.toString}\n${headSide.reverse}: ${reverseSideHeadOrder.toString}")
       assert(false)
+    }
+
+    // Asserts taker quantity is split correctly into payouts, refund, and in-market leftover
+    {
+
+      val leftoverQuantity: Long = updatedTakerToAdd.map(_.quantity).getOrElse(0L)
+      val payoutQuantity: Long = txs.map(_.takerUpdate.outAmount).foldLeft(0L)(_ + _)
+      val refundQuantity: Long = txs.lastOption.map(_.takerUpdate.current).getOrElse(orderInfo.order).refund.map(_.amount).getOrElse(0L)
+      val total = leftoverQuantity + payoutQuantity + refundQuantity
+
+      assert(total == order.quantity,
+        s"market math error for taker: leftoverQuantity(${leftoverQuantity}) + " +
+          s"payoutQuantity(${payoutQuantity}) + refundQuantity(${refundQuantity}) == " +
+          s"total(${total}), but original taker order quantity is ${order.quantity}"
+      )
     }
 
     OrderSubmitted(orderInfo, txs)
@@ -302,7 +332,12 @@ class MarketManager(val headSide: MarketSide) extends Manager[TMarketState] with
 
   def getOrderMarketSide(orderId: Long, userId: Long): Option[MarketSide] =
     orderMap.get(orderId) filter (_.userId == userId) map { order =>
-      if (orderPool(tailSide).contains(order)) tailSide else headSide
+      if (orderPool(tailSide).contains(order)) tailSide
+      else if (orderPool(headSide).contains(order)) headSide
+      else {
+        assert(false, "order in orderMap but not in orrderPool")
+        headSide
+      }
     }
 
   def removeOrder(orderId: Long, userId: Long): (MarketSide, Order) = {

@@ -34,13 +34,13 @@ class AccountProcessor(
   override implicit val logger = log
 
   private val MAX_PRICE = 1E8.toDouble // 100000000.00000001 can be preserved by toDouble.
-  private var hotColdTransferLastTransferTime = Map.empty[Currency, Long]
+  private val FIRST_USER_ID = 1000000000
 
   override val processorId = ACCOUNT_PROCESSOR <<
   val channelToMarketProcessors = createChannelTo(MARKET_PROCESSOR <<) // DO NOT CHANGE
   val channelToMarketUpdateProcessor = createChannelTo(MARKET_UPDATE_PROCESSOR<<) // DO NOT CHANGE
   val channelToDepositWithdrawalProcessor = createChannelTo(ACCOUNT_TRANSFER_PROCESSOR<<) // DO NOT CHANGE
-  val manager = new AccountManager(1E12.toLong, accountConfig.hotColdTransfer)
+  val manager = new AccountManager(1E12.toLong)
 
   override def identifyChannel: PartialFunction[Any, String] = {
     case as: AdminConfirmTransferSuccess => "tsf"
@@ -48,6 +48,7 @@ class AccountProcessor(
     case rt: RequestTransferFailed => "tsf"
     case cs: CryptoTransferSucceeded => "tsf"
     case cf: CryptoTransferFailed => "tsf"
+    case cr: CryptoTransferResult => "tsf"
     case cl: DoCancelTransfer => "tsf"
     case OrderSubmitted(originOrderInfo, txs) => "mp_" + originOrderInfo.side.s
     case OrderCancelled(side, order) => "mp_" + side.s
@@ -56,13 +57,11 @@ class AccountProcessor(
   def receiveRecover = PartialFunction.empty[Any, Unit]
 
   def receiveCommand = LoggingReceive {
-    case DoRequestTransfer(t) => t.`type` match {
+    case DoRequestTransfer(t, _) => t.`type` match {
       case Withdrawal =>
         val adjustment = CashAccount(t.currency, -t.amount, 0, t.amount)
         if (!manager.canUpdateCashAccount(t.userId, adjustment)) {
           sender ! RequestTransferFailed(InsufficientFund)
-        } else if (!manager.canUpdateHotAccount(adjustment)) {
-          sender ! RequestTransferFailed(InsufficientHot)
         } else {
           val updated = countFee(t.copy(created = Some(System.currentTimeMillis)))
           persist(DoRequestTransfer(updated)) { event =>
@@ -82,27 +81,24 @@ class AccountProcessor(
           }
         }
 
-      case HotToCold =>
-        if (!manager.canUpdateHotAccount(CashAccount(t.currency, -t.amount, 0, t.amount))) {
-          sender ! RequestTransferFailed(InsufficientHot)
-        } else {
-          persist(DoRequestTransfer(t)) { event =>
-            updateState(event)
-            channelToDepositWithdrawalProcessor forward Deliver(Persistent(event), depositWithdrawProcessorPath)
-          }
-        }
-
-      case ColdToHot =>
-        if (!manager.canUpdateColdAccount(CashAccount(t.currency, -t.amount, 0, t.amount))) {
-          sender ! RequestTransferFailed(InsufficientCold)
-        } else {
-          persist(DoRequestTransfer(t)) { event =>
-            updateState(event)
-            channelToDepositWithdrawalProcessor forward Deliver(Persistent(event), depositWithdrawProcessorPath)
-          }
-        }
-      case _ => // frontend can't send UserToHot
+      case _ => // frontend can't send UserToHot, HotToCold, ColdToHot
     }
+
+    case DoRequestPayment(payment) =>
+      val adjustment = CashAccount(payment.currency, -payment.amount, 0, 0)
+      if (payment.payer < FIRST_USER_ID || payment.payee < FIRST_USER_ID) {
+        sender ! RequestPaymentResult(payment.currency, ErrorCode.InvalidUser)
+      } else if (payment.amount <= 0) {
+        sender ! RequestPaymentResult(payment.currency, ErrorCode.InvalidAmount)
+      } else if (!manager.canUpdateCashAccount(payment.payer, adjustment)) {
+        sender ! RequestPaymentResult(payment.currency, ErrorCode.InsufficientFund)
+      } else {
+        val updated = payment.copy(id = manager.getLastPaymentId(), created = Some(System.currentTimeMillis))
+        persist(DoRequestPayment(updated)) { event =>
+          updateState(event)
+          sender ! RequestPaymentResult(payment.currency, ErrorCode.Ok)
+        }
+      }
 
     case p @ ConfirmablePersistent(m: AdminConfirmTransferSuccess, _, _) =>
       persist(m.copy(transfer = appendFeeIfNecessary(m.transfer))) { event =>
@@ -115,12 +111,6 @@ class AccountProcessor(
         event =>
           confirm(p)
           updateState(event)
-          val currency = m.transfers(0).currency
-          if (accountConfig.enableHotColdTransfer && (m.txType == Withdrawal || m.txType == UserToHot) &&
-            System.currentTimeMillis - hotColdTransferLastTransferTime.getOrElse(currency, 0L) > accountConfig.hotColdTransferInterval) {
-            hotColdTransferLastTransferTime += (currency -> System.currentTimeMillis)
-            transferHotColdIfNeed(currency)
-          }
       }
 
     case m: CryptoTransferResult =>
@@ -219,31 +209,20 @@ class AccountProcessor(
       }
 
     case p @ ConfirmablePersistent(event: OrderSubmitted, seq, _) =>
+      confirm(p)
       persist(countFee(event)) { event =>
-        confirm(p)
         sender ! event
         updateState(event)
         channelToMarketUpdateProcessor forward Deliver(Persistent(event), marketUpdateProcessoressorPath)
       }
 
     case p @ ConfirmablePersistent(event: OrderCancelled, seq, _) =>
+      confirm(p)
       persist(countFee(event)) { event =>
-        confirm(p)
         sender ! event
         updateState(event)
         channelToMarketUpdateProcessor forward Deliver(Persistent(event), marketUpdateProcessoressorPath)
       }
-  }
-
-  private def transferHotColdIfNeed(currency: Currency) {
-    manager.needHotColdTransfer(currency) match {
-      case None =>
-      case Some(amount) if amount == 0 =>
-      case Some(amount) if amount > 0 =>
-        self ! DoRequestTransfer(AccountTransfer(0, 0, HotToCold, currency, amount, created = Some(System.currentTimeMillis)))
-      case Some(amount) if amount < 0 =>
-        self ! DoRequestTransfer(AccountTransfer(0, 0, ColdToHot, currency, -amount, created = Some(System.currentTimeMillis)))
-    }
   }
 
   private def getProcessorPath(side: MarketSide): ActorPath = {
@@ -262,23 +241,6 @@ class AccountProcessor(
     persist(m.copy(multiTransfers = m.multiTransfers.map(kv => kv._1 -> kv._2.copy(transfers = kv._2.transfers map { appendFeeIfNecessary(_) })))) {
       event =>
         updateState(event)
-        val currency = m.multiTransfers.values.head.transfers(0).currency
-        var needCheckHotColdTransfer = false
-        m.multiTransfers.values.foreach {
-          transferWithMinerFee =>
-            transferWithMinerFee.transfers.foreach {
-              _.`type` match {
-                case Withdrawal => needCheckHotColdTransfer = true
-                case UserToHot => needCheckHotColdTransfer = true
-                case _ =>
-              }
-            }
-        }
-        if (accountConfig.enableHotColdTransfer && needCheckHotColdTransfer &&
-          System.currentTimeMillis - hotColdTransferLastTransferTime.getOrElse(currency, 0L) > accountConfig.hotColdTransferInterval) {
-          hotColdTransferLastTransferTime += (currency -> System.currentTimeMillis)
-          transferHotColdIfNeed(currency)
-        }
     }
   }
 }
@@ -292,8 +254,11 @@ trait AccountManagerBehavior extends CountFeeSupport {
     case DoRequestGenerateABCode(userId, amount, Some(a), Some(b)) =>
       manager.createABCodeTransaction(userId, a, b, amount)
       manager.updateCashAccount(userId, CashAccount(Currency.Cny, -amount, amount, 0))
+
     case DoRequestACodeQuery(userId, codeA) => manager.freezeABCode(userId, codeA)
+
     case DoRequestBCodeRecharge(userId, codeB) => manager.bCodeRecharge(userId, codeB)
+
     case DoRequestConfirmRC(userId, codeB, amount) => {
       manager.confirmRecharge(userId, codeB)
       manager.updateCashAccount(userId, CashAccount(Currency.Cny, 0, -amount, 0))
@@ -301,25 +266,24 @@ trait AccountManagerBehavior extends CountFeeSupport {
         CashAccount(Currency.Cny, amount, 0, 0))
     }
 
-    case DoRequestTransfer(t) =>
+    case DoRequestTransfer(t, _) =>
       t.`type` match {
         case Withdrawal =>
           manager.updateCashAccount(t.userId, CashAccount(t.currency, -t.amount, 0, t.amount))
-          manager.updateHotCashAccount(CashAccount(t.currency, -t.amount, 0, t.amount))
-        case HotToCold =>
-          manager.updateHotCashAccount(CashAccount(t.currency, -t.amount, 0, t.amount))
         case _ =>
       }
 
-    case AdminConfirmTransferSuccess(t) =>
+    case AdminConfirmTransferSuccess(t, _) =>
       succeededTransfer(t)
 
     case AdminConfirmTransferFailure(t, _) =>
       failedTransfer(t)
 
-    case CryptoTransferSucceeded(_, t, minerFee) => {
+    case CryptoTransferSucceeded(txType, t, minerFee) => {
       t foreach { succeededTransfer(_) }
-      minerFee foreach { substractMinerFee(t(0).currency, _) }
+      if (txType != Deposit) {
+        minerFee foreach { substractMinerFee(t(0).currency, _) }
+      }
     }
 
     case CryptoTransferResult(multiTransfers) => {
@@ -334,7 +298,9 @@ trait AccountManagerBehavior extends CountFeeSupport {
                 case _ => logger.error("Unexpected transferStatus" + transfer.toString)
               }
           }
-          transferWithFee.minerFee foreach (substractMinerFee(transferWithFee.transfers(0).currency, _))
+          if (transferWithFee.transfers(0).`type` != Deposit) {
+            transferWithFee.minerFee foreach (substractMinerFee(transferWithFee.transfers(0).currency, _))
+          }
       }
     }
 
@@ -353,8 +319,8 @@ trait AccountManagerBehavior extends CountFeeSupport {
       val side = originOrderInfo.side
       txs foreach { tx =>
         val (takerUpdate, makerUpdate, fees) = (tx.takerUpdate, tx.makerUpdate, tx.fees)
-        manager.transferFundFromLocked(takerUpdate.userId, makerUpdate.userId, side.outCurrency, takerUpdate.outAmount)
-        manager.transferFundFromLocked(makerUpdate.userId, takerUpdate.userId, side.inCurrency, makerUpdate.outAmount)
+        manager.transferFundFromLocked(from = takerUpdate.userId, to = makerUpdate.userId, side.outCurrency, takerUpdate.outAmount)
+        manager.transferFundFromLocked(from = makerUpdate.userId, to = takerUpdate.userId, side.inCurrency, makerUpdate.outAmount)
         refund(side.inCurrency, makerUpdate.current)
 
         tx.fees.getOrElse(Nil) foreach { f =>
@@ -367,6 +333,11 @@ trait AccountManagerBehavior extends CountFeeSupport {
 
     case OrderCancelled(side, order) =>
       manager.conditionalRefund(true)(side.outCurrency, order)
+
+    case DoRequestPayment(payment) =>
+      manager.setLastPaymentId(payment.id)
+      manager.updateCashAccount(payment.payer, CashAccount(payment.currency, -payment.amount, 0, 0))
+      manager.updateCashAccount(payment.payee, CashAccount(payment.currency, payment.amount, 0, 0))
   }
 
   private def succeededTransfer(t: AccountTransfer) {
@@ -383,34 +354,20 @@ trait AccountManagerBehavior extends CountFeeSupport {
           case Some(f) if (f.amount > 0) =>
             manager.transferFundFromPendingWithdrawal(f.payer, f.payee.getOrElse(COINPORT_UID), f.currency, f.amount)
             manager.updateCashAccount(t.userId, CashAccount(t.currency, 0, 0, f.amount - t.amount))
-            manager.updateHotCashAccount(CashAccount(t.currency, f.amount, 0, -t.amount))
           case _ =>
             manager.updateCashAccount(t.userId, CashAccount(t.currency, 0, 0, -t.amount))
-            manager.updateHotCashAccount(CashAccount(t.currency, 0, 0, -t.amount))
         }
-      case UserToHot =>
-        manager.updateHotCashAccount(CashAccount(t.currency, t.amount, 0, 0))
-      case HotToCold =>
-        manager.updateHotCashAccount(CashAccount(t.currency, 0, 0, -t.amount))
-        manager.updateColdCashAccount(CashAccount(t.currency, t.amount, 0, 0))
-      case ColdToHot =>
-        manager.updateColdCashAccount(CashAccount(t.currency, -t.amount, 0, 0))
-        manager.updateHotCashAccount(CashAccount(t.currency, t.amount, 0, 0))
-      case TransferType.Unknown =>
+      case _ =>
     }
   }
 
   private def substractMinerFee(currency: Currency, minerFee: Long) {
-    manager.updateHotCashAccount(CashAccount(currency, -minerFee, 0, 0))
-    manager.updateCoinportAccount(CashAccount(currency, -minerFee, 0, 0))
+    manager.updateCryptoAccount(CashAccount(currency, -minerFee, 0, 0))
   }
 
   private def failedTransfer(t: AccountTransfer) {
     t.`type` match {
-      case Withdrawal =>
-        manager.updateCashAccount(t.userId, CashAccount(t.currency, t.amount, 0, -t.amount))
-        manager.updateHotCashAccount(CashAccount(t.currency, t.amount, 0, -t.amount))
-      case HotToCold => manager.updateHotCashAccount(CashAccount(t.currency, t.amount, 0, -t.amount))
+      case Withdrawal => manager.updateCashAccount(t.userId, CashAccount(t.currency, t.amount, 0, -t.amount))
       case _ =>
     }
   }
